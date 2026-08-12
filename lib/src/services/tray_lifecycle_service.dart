@@ -33,18 +33,26 @@ class TrayLifecycleService with WindowListener, TrayListener {
       },
     );
 
-    await trayManager.setIcon('assets/branding/kimome_icon.png');
-    await trayManager.setToolTip('KimomeMessage يعمل في الخلفية');
-    await trayManager.setContextMenu(
-      Menu(
-        items: <MenuItem>[
-          MenuItem(key: 'show', label: 'إظهار النافذة'),
-          MenuItem.separator(),
-          MenuItem(key: 'quit', label: 'إغلاق التطبيق'),
-        ],
-      ),
-    );
-    trayManager.addListener(this);
+    try {
+      await trayManager.setIcon('assets/branding/kimome_icon.png');
+    } catch (_) {
+      // ignore icon failure if missing
+    }
+    try {
+      await trayManager.setToolTip('KimomeMessage يعمل في الخلفية');
+      await trayManager.setContextMenu(
+        Menu(
+          items: <MenuItem>[
+            MenuItem(key: 'show', label: 'إظهار النافذة'),
+            MenuItem.separator(),
+            MenuItem(key: 'quit', label: 'إغلاق التطبيق'),
+          ],
+        ),
+      );
+      trayManager.addListener(this);
+    } catch (_) {
+      // Tray may not be supported in this environment
+    }
   }
 
   @override

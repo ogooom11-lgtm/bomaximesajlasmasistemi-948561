@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
 import 'services/chat_controller.dart';
+import 'services/notification_service.dart';
 import 'services/settings_store.dart';
+import 'services/sticker_store.dart';
 import 'theme/app_theme.dart';
 import 'ui/home_shell.dart';
 
@@ -10,15 +12,19 @@ class KimomeMessageApp extends StatelessWidget {
     super.key,
     required this.settings,
     required this.controller,
+    required this.stickerStore,
+    required this.notifications,
   });
 
   final SettingsStore settings;
   final ChatController controller;
+  final StickerStore stickerStore;
+  final NotificationService notifications;
 
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: settings,
+      animation: Listenable.merge([settings, stickerStore]),
       builder: (context, _) {
         return MaterialApp(
           debugShowCheckedModeBanner: false,
@@ -32,7 +38,12 @@ class KimomeMessageApp extends StatelessWidget {
               child: child ?? const SizedBox.shrink(),
             );
           },
-          home: HomeShell(settings: settings, controller: controller),
+          home: HomeShell(
+            settings: settings,
+            controller: controller,
+            stickerStore: stickerStore,
+            notifications: notifications,
+          ),
         );
       },
     );

@@ -9,6 +9,7 @@ import 'package:record/record.dart';
 import '../models/telegram_models.dart';
 import 'notification_service.dart';
 import 'settings_store.dart';
+import 'sticker_store.dart';
 import 'telegram_bot_api.dart';
 
 enum MessageFileMode {
@@ -38,11 +39,14 @@ class ChatController extends ChangeNotifier {
   ChatController({
     required SettingsStore settings,
     required NotificationService notifications,
-  }) : _settings = settings,
-       _notifications = notifications;
+    required StickerStore stickerStore,
+  })  : _settings = settings,
+        _notifications = notifications,
+        _stickerStore = stickerStore;
 
   final SettingsStore _settings;
   final NotificationService _notifications;
+  final StickerStore _stickerStore;
 
   TelegramBotApi? _api;
   BotIdentity? _bot;
@@ -71,6 +75,13 @@ class ChatController extends ChangeNotifier {
   DateTime? get recordingStartedAt => _recordingStartedAt;
   bool get isConnected => _api != null && _bot != null && _lastError == null;
   String? get lastError => _lastError;
+
+  int get totalUnread => _unreadByChat.values.fold(0, (a, b) => a + b);
+  List<String> get unreadChatNames {
+    return _unreadByChat.entries
+        .map((e) => _chats[e.key]?.displayTitle ?? 'محادثة ${e.key}')
+        .toList();
+  }
 
   TelegramChat? get selectedChat {
     final id = _selectedChatId;
@@ -155,7 +166,8 @@ class ChatController extends ChangeNotifier {
 
   Future<void> bootstrap() async {
     _selectedChatId = _settings.preferredChatId;
-    final archived = _settings.loadMessageArchive();
+    final archived = _settings.loadMessageArchive(
+        accountId: _settings.activeAccountId);
     _messagesByChat
       ..clear()
       ..addAll(archived);
@@ -174,6 +186,42 @@ class ChatController extends ChangeNotifier {
       await connect(
         token: _settings.botToken,
         preferredChatId: _settings.preferredChatId,
+        persist: false,
+      );
+    }
+  }
+
+  Future<void> switchToAccount(AccountProfile account) async {
+    // Stop current polling
+    _pollSession++;
+    _isPolling = false;
+    _api = null;
+    _bot = null;
+    _updateOffset = null;
+    _chats.clear();
+    _messagesByChat.clear();
+    _unreadByChat.clear();
+    _selectedChatId = account.preferredChatId;
+    _lastError = null;
+    notifyListeners();
+
+    // Load archive for this account
+    final archived =
+        _settings.loadMessageArchive(accountId: account.id);
+    _messagesByChat.addAll(archived);
+    _chats.addEntries(archived.entries
+        .where((e) => e.value.isNotEmpty)
+        .map((e) => MapEntry(e.key, e.value.last.chat)));
+    if (_selectedChatId == null && _chats.isNotEmpty) {
+      _selectedChatId = _chats.keys.first;
+    }
+    notifyListeners();
+
+    if (account.botToken.trim().isNotEmpty) {
+      await connect(
+        token: account.botToken,
+        apiBaseUrl: account.apiBaseUrl,
+        preferredChatId: account.preferredChatId,
         persist: false,
       );
     }
@@ -232,6 +280,7 @@ class ChatController extends ChangeNotifier {
     _selectedChatId = chatId;
     _chats.putIfAbsent(chatId, () => TelegramChat(id: chatId, type: 'private'));
     _unreadByChat[chatId] = 0;
+    unawaited(_notifications.onChatOpened(chatId));
     notifyListeners();
   }
 
@@ -351,6 +400,14 @@ class ChatController extends ChangeNotifier {
           replyToMessageId: replyToMessageId,
         );
         _replaceMessage(pending.id, sent);
+        // If sticker, save to store
+        if (route.kind == AttachmentKind.sticker) {
+          for (final att in sent.attachments) {
+            if (att.kind == AttachmentKind.sticker) {
+              await _stickerStore.addFromAttachment(att, localPath: path);
+            }
+          }
+        }
         await _notifications.playSendSound();
       } catch (error) {
         _replaceMessage(
@@ -361,6 +418,81 @@ class ChatController extends ChangeNotifier {
         notifyListeners();
       }
     }
+  }
+
+  Future<void> sendSticker(SavedSticker sticker, {int? replyToMessageId}) async {
+    final api = _api;
+    final bot = _bot;
+    final chat = selectedChat;
+    if (api == null || bot == null || chat == null) return;
+
+    // Prefer sending by fileId
+    if (sticker.fileId.isNotEmpty) {
+      final pending = _pendingStickerMessage(chat: chat, sticker: sticker, replyToMessageId: replyToMessageId);
+      _addOrReplaceMessage(pending);
+      try {
+        final sent = await api.sendStickerByFileId(
+          chatId: chat.id,
+          stickerFileId: sticker.fileId,
+          botId: bot.id,
+          replyToMessageId: replyToMessageId,
+        );
+        _replaceMessage(pending.id, sent);
+        await _notifications.playSendSound();
+      } catch (e) {
+        // Fallback: if fileId fails, try local path if exists
+        if (sticker.localPath != null && await File(sticker.localPath!).exists()) {
+          try {
+            final sent = await api.sendMediaFile(
+              chatId: chat.id,
+              method: 'sendSticker',
+              fieldName: 'sticker',
+              filePath: sticker.localPath!,
+              botId: bot.id,
+              replyToMessageId: replyToMessageId,
+            );
+            _replaceMessage(pending.id, sent);
+            await _notifications.playSendSound();
+            return;
+          } catch (_) {}
+        }
+        _replaceMessage(pending.id, pending.copyWith(delivery: MessageDelivery.failed));
+        _lastError = _friendlyError(e);
+        notifyListeners();
+      }
+    } else if (sticker.localPath != null) {
+      await sendFiles([sticker.localPath!], mode: MessageFileMode.sticker, replyToMessageId: replyToMessageId);
+    }
+  }
+
+  TelegramMessage _pendingStickerMessage({
+    required TelegramChat chat,
+    required SavedSticker sticker,
+    int? replyToMessageId,
+  }) {
+    final temporaryId = _temporaryMessageId--;
+    return TelegramMessage(
+      id: '${chat.id}:$temporaryId',
+      chat: chat,
+      messageId: temporaryId,
+      date: DateTime.now(),
+      isOutgoing: true,
+      delivery: MessageDelivery.sending,
+      replyToMessageId: replyToMessageId,
+      fromName: 'KimomeMessage',
+      attachments: [
+        TelegramAttachment(
+          kind: AttachmentKind.sticker,
+          fileId: sticker.fileId,
+          uniqueId: sticker.uniqueId,
+          fileName: sticker.fileName,
+          localPath: sticker.localPath,
+          isVideoSticker: sticker.isVideo,
+          isAnimatedSticker: sticker.isAnimated,
+          emoji: sticker.emoji,
+        )
+      ],
+    );
   }
 
   Future<void> editMessage(TelegramMessage message, String text) async {
@@ -523,10 +655,25 @@ class ChatController extends ChangeNotifier {
         message.id,
         message.copyWith(attachments: updatedAttachments),
       );
+      // If sticker, auto-save
+      if (attachment.kind == AttachmentKind.sticker) {
+        await _stickerStore.addFromAttachment(attachment, localPath: file.path);
+      }
       return file;
     } catch (error) {
       _lastError = _friendlyError(error);
       notifyListeners();
+      return null;
+    }
+  }
+
+  Future<String?> getStreamingUrl(TelegramAttachment attachment) async {
+    final api = _api;
+    if (api == null) return null;
+    try {
+      final uri = await api.tryGetFileUrlForAttachment(attachment);
+      return uri?.toString();
+    } catch (_) {
       return null;
     }
   }
@@ -663,6 +810,14 @@ class ChatController extends ChangeNotifier {
           : message;
       final existed = _containsMessage(normalized.id);
       _addOrReplaceMessage(normalized);
+
+      // Auto-save stickers
+      if (normalized.attachments.any((a) => a.kind == AttachmentKind.sticker)) {
+        for (final att in normalized.attachments.where((a) => a.kind == AttachmentKind.sticker)) {
+          unawaited(_autoCacheSticker(normalized, att));
+        }
+      }
+
       if (!normalized.isOutgoing && !edited && !existed) {
         if (normalized.chat.id != _selectedChatId) {
           _unreadByChat[normalized.chat.id] =
@@ -672,6 +827,27 @@ class ChatController extends ChangeNotifier {
       }
     }
     notifyListeners();
+  }
+
+  Future<void> _autoCacheSticker(TelegramMessage message, TelegramAttachment attachment) async {
+    final api = _api;
+    if (api == null) return;
+    try {
+      // Try to get local file without full download if already cached, else download
+      if (attachment.localPath != null) {
+        await _stickerStore.addFromAttachment(attachment);
+        return;
+      }
+      // Download to cache via streaming
+      final file = await api.cacheAttachment(attachment);
+      await _stickerStore.addFromAttachment(attachment, localPath: file.path);
+      // Update message attachment path
+      final updated = message.attachments.map((a) {
+        if (a.fileId == attachment.fileId) return a.copyWith(localPath: file.path);
+        return a;
+      }).toList();
+      _replaceMessage(message.id, message.copyWith(attachments: updated));
+    } catch (_) {}
   }
 
   void _handleReactionUpdate(Map<String, dynamic> reaction) {
@@ -800,7 +976,8 @@ class ChatController extends ChangeNotifier {
   }
 
   void _persistArchive() {
-    unawaited(_settings.saveMessageArchive(_messagesByChat));
+    unawaited(_settings.saveMessageArchive(_messagesByChat,
+        accountId: _settings.activeAccountId));
   }
 
   TelegramMessage _pendingFileMessage({
