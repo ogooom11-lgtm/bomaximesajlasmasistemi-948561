@@ -41,7 +41,7 @@ class NotificationService {
     );
 
     await _plugin.initialize(
-      initSettings,
+      settings: initSettings,
       onDidReceiveNotificationResponse: (response) {
         if (response.actionId == 'clear_action' ||
             response.payload == 'clear') {
