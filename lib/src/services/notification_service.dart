@@ -41,16 +41,14 @@ class NotificationService {
     );
 
     await _plugin.initialize(
-      settings: initSettings,
+      initSettings,
       onDidReceiveNotificationResponse: (response) {
-        if (response.actionId == 'clear_action' || response.payload == 'clear') {
+        if (response.actionId == 'clear_action' ||
+            response.payload == 'clear') {
           clearNotifications();
         }
       },
     );
-
-    // Setup notification actions/categories for platforms that support
-    // Android: create channel with actions (handled via notification details)
   }
 
   // Called per incoming message from ChatController
@@ -97,7 +95,8 @@ class NotificationService {
 
     if (_unreadPerChat.length == 1) {
       final info = _unreadPerChat.values.first;
-      final sender = info.chatTitle.isNotEmpty ? info.chatTitle : info.fromName;
+      final sender =
+          info.chatTitle.isNotEmpty ? info.chatTitle : info.fromName;
       if (info.count == 1) {
         title = sender;
         body = info.lastMessage?.previewText ?? 'رسالة جديدة';
@@ -108,20 +107,25 @@ class NotificationService {
     } else {
       // Multiple chats
       final totalChats = _unreadPerChat.length;
-      final names = _unreadPerChat.values.map((e) => e.chatTitle).take(3).join('، ');
+      final names = _unreadPerChat.values
+          .map((e) => e.chatTitle)
+          .take(3)
+          .join('، ');
       title = 'KimomeMessage';
       if (_totalUnread == 1) {
         body = 'رسالة جديدة من $names';
       } else {
-        body = 'لديك $_totalUnread رسائل غير مقروءة من $totalChats محادثات: $names';
+        body =
+            'لديك $_totalUnread رسائل غير مقروءة من $totalChats محادثات: $names';
         if (body.length > 120) {
-          body = 'لديك $_totalUnread رسائل غير مقروءة من $totalChats محادثات';
+          body =
+              'لديك $_totalUnread رسائل غير مقروءة من $totalChats محادثات';
         }
       }
     }
 
-    // Actions for Android / Linux / Darwin
-    const androidDetails = AndroidNotificationDetails(
+    // Notification details - all non-const to avoid const-expression errors
+    final androidDetails = AndroidNotificationDetails(
       'kimome_messages',
       'رسائل KimomeMessage',
       channelDescription: 'تنبيهات الرسائل الجديدة من بوت تلغرام',
@@ -130,7 +134,7 @@ class NotificationService {
       playSound: true,
       groupKey: 'kimome_group',
       setAsGroupSummary: true,
-      actions: <AndroidNotificationAction>[
+      actions: const <AndroidNotificationAction>[
         AndroidNotificationAction('clear_action', 'حذف الإشعارات',
             showsUserInterface: false, cancelNotification: true),
       ],
@@ -144,8 +148,9 @@ class NotificationService {
     final linuxDetails = LinuxNotificationDetails(
       urgency: LinuxNotificationUrgency.normal,
       category: LinuxNotificationCategory.imReceived,
-      actions: <LinuxNotificationAction>[
-        LinuxNotificationAction(key: 'clear_action', label: 'حذف الإشعارات'),
+      actions: const <LinuxNotificationAction>[
+        LinuxNotificationAction(
+            key: 'clear_action', label: 'حذف الإشعارات'),
       ],
     );
 
@@ -154,7 +159,7 @@ class NotificationService {
       subtitle: 'رسائل غير مقروءة',
     );
 
-    const details = NotificationDetails(
+    final details = NotificationDetails(
       android: androidDetails,
       iOS: darwinDetails,
       macOS: darwinDetails,
@@ -163,32 +168,36 @@ class NotificationService {
     );
 
     await _plugin.show(
-      _groupedNotificationId,
-      title,
-      body,
-      details,
+      id: _groupedNotificationId,
+      title: title,
+      body: body,
+      notificationDetails: details,
       payload: 'grouped',
     );
   }
 
-  Future<void> showSummaryIfAppOpen({required int totalUnread, required List<String> chatNames}) async {
+  Future<void> showSummaryIfAppOpen(
+      {required int totalUnread, required List<String> chatNames}) async {
     if (!_settings.notificationsEnabled) return;
     if (totalUnread == 0) return;
 
     String title = 'KimomeMessage';
     String body;
     if (totalUnread == 1) {
-      body = chatNames.isNotEmpty ? 'رسالة غير مقروءة من ${chatNames.first}' : 'لديك رسالة غير مقروءة';
+      body = chatNames.isNotEmpty
+          ? 'رسالة غير مقروءة من ${chatNames.first}'
+          : 'لديك رسالة غير مقروءة';
     } else {
       if (chatNames.length == 1) {
-        body = 'لديك $totalUnread رسائل غير مقروءة من ${chatNames.first}';
+        body =
+            'لديك $totalUnread رسائل غير مقروءة من ${chatNames.first}';
       } else {
         body = 'لديك $totalUnread رسائل غير مقروءة';
       }
     }
 
-    const details = NotificationDetails(
-      android: AndroidNotificationDetails(
+    final details = NotificationDetails(
+      android: const AndroidNotificationDetails(
         'kimome_messages',
         'رسائل KimomeMessage',
         channelDescription: 'تنبيهات الرسائل الجديدة',
@@ -200,15 +209,22 @@ class NotificationService {
           AndroidNotificationAction('clear_action', 'حذف الإشعارات'),
         ],
       ),
-      linux: LinuxNotificationDetails(
+      linux: const LinuxNotificationDetails(
         actions: <LinuxNotificationAction>[
-          LinuxNotificationAction(key: 'clear_action', label: 'حذف الإشعارات')
+          LinuxNotificationAction(
+              key: 'clear_action', label: 'حذف الإشعارات')
         ],
       ),
-      windows: WindowsNotificationDetails(),
+      windows: const WindowsNotificationDetails(),
     );
 
-    await _plugin.show(_groupedNotificationId, title, body, details, payload: 'summary');
+    await _plugin.show(
+      id: _groupedNotificationId,
+      title: title,
+      body: body,
+      notificationDetails: details,
+      payload: 'summary',
+    );
   }
 
   Future<void> clearNotifications() async {
