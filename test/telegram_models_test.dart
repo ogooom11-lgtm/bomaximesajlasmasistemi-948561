@@ -39,6 +39,28 @@ void main() {
     expect(message.canDelete, isFalse);
   });
 
+  test('distinguishes groups and channels from private chats', () {
+    const group = TelegramChat(id: -1001, type: 'supergroup', title: 'Team');
+    const channel = TelegramChat(id: -1002, type: 'channel', title: 'News');
+    const private = TelegramChat(id: 7, type: 'private', firstName: 'User');
+
+    expect(group.isGroup, isTrue);
+    expect(group.isCommunity, isTrue);
+    expect(channel.isChannel, isTrue);
+    expect(private.isCommunity, isFalse);
+  });
+
+  test('can explicitly clear a legacy attachment cache path', () {
+    const attachment = TelegramAttachment(
+      kind: AttachmentKind.sticker,
+      fileId: 'file',
+      uniqueId: 'unique',
+      localPath: '/tmp/sticker.webp',
+    );
+
+    expect(attachment.copyWith(clearLocalPath: true).localPath, isNull);
+  });
+
   test('only outgoing sent messages can be deleted for everyone', () {
     final chat = TelegramChat(id: 77, type: 'private', title: 'Test chat');
     final incoming = TelegramMessage(

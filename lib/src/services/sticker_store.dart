@@ -85,8 +85,11 @@ class StickerStore extends ChangeNotifier {
   SharedPreferences? _prefs;
   final List<SavedSticker> _stickers = [];
 
-  List<SavedSticker> get stickers => List<SavedSticker>.unmodifiable(
-      _stickers..sort((a, b) => b.addedAt.compareTo(a.addedAt)));
+  List<SavedSticker> get stickers {
+    final sorted = List<SavedSticker>.of(_stickers)
+      ..sort((a, b) => b.addedAt.compareTo(a.addedAt));
+    return List<SavedSticker>.unmodifiable(sorted);
+  }
 
   bool _loaded = false;
 
@@ -110,8 +113,13 @@ class StickerStore extends ChangeNotifier {
         }
       } catch (_) {}
     }
+    // Older versions cached every sticker under the same "sticker.webp"
+    // path. Clear those shared references so a newly downloaded sticker can no
+    // longer visually replace all previous stickers.
+    _clearSharedLegacyPaths();
     // Clean up missing files
     await _pruneMissingFiles();
+    await _persist();
     _loaded = true;
     notifyListeners();
   }
@@ -182,6 +190,33 @@ class StickerStore extends ChangeNotifier {
     final dir = Directory('${base.path}${Platform.pathSeparator}stickers');
     if (!await dir.exists()) await dir.create(recursive: true);
     return dir;
+  }
+
+  void _clearSharedLegacyPaths() {
+    final counts = <String, int>{};
+    for (final sticker in _stickers) {
+      final path = sticker.localPath;
+      if (path != null && path.isNotEmpty) {
+        counts[path] = (counts[path] ?? 0) + 1;
+      }
+    }
+    for (var i = 0; i < _stickers.length; i++) {
+      final sticker = _stickers[i];
+      final path = sticker.localPath;
+      if (path == null || (counts[path] ?? 0) <= 1) continue;
+      _stickers[i] = SavedSticker(
+        fileId: sticker.fileId,
+        uniqueId: sticker.uniqueId,
+        emoji: sticker.emoji,
+        fileName: sticker.fileName,
+        isAnimated: sticker.isAnimated,
+        isVideo: sticker.isVideo,
+        width: sticker.width,
+        height: sticker.height,
+        fileSize: sticker.fileSize,
+        addedAt: sticker.addedAt,
+      );
+    }
   }
 
   Future<void> _pruneMissingFiles() async {

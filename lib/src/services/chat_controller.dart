@@ -54,8 +54,10 @@ class ChatController extends ChangeNotifier {
   int? _updateOffset;
   int _pollSession = 0;
   int _temporaryMessageId = -1;
+  Timer? _reconnectTimer;
 
   final Map<int, TelegramChat> _chats = <int, TelegramChat>{};
+  final Map<int, bool> _canSendByChat = <int, bool>{};
   final Map<int, List<TelegramMessage>> _messagesByChat =
       <int, List<TelegramMessage>>{};
   final Map<int, int> _unreadByChat = <int, int>{};
@@ -75,6 +77,15 @@ class ChatController extends ChangeNotifier {
   DateTime? get recordingStartedAt => _recordingStartedAt;
   bool get isConnected => _api != null && _bot != null && _lastError == null;
   String? get lastError => _lastError;
+  bool get canSendToSelectedChat {
+    final chat = selectedChat;
+    if (chat == null) return false;
+    return _canSendByChat[chat.id] ?? true;
+  }
+
+  String? get selectedChatSendRestriction => canSendToSelectedChat
+      ? null
+      : 'أوقف مالك المجموعة صلاحية إرسال الرسائل لهذا البوت.';
 
   int get totalUnread => _unreadByChat.values.fold(0, (a, b) => a + b);
   List<String> get unreadChatNames {
@@ -97,7 +108,8 @@ class ChatController extends ChangeNotifier {
       return const <TelegramMessage>[];
     }
     return List<TelegramMessage>.unmodifiable(
-      _messagesByChat[id] ?? const <TelegramMessage>[],
+      (_messagesByChat[id] ?? const <TelegramMessage>[])
+          .where((message) => message.delivery != MessageDelivery.deleted),
     );
   }
 
@@ -106,7 +118,9 @@ class ChatController extends ChangeNotifier {
     final includedIds = <int>{};
     for (final entry in _chats.entries) {
       includedIds.add(entry.key);
-      final messages = _messagesByChat[entry.key] ?? const <TelegramMessage>[];
+      final messages = (_messagesByChat[entry.key] ?? const <TelegramMessage>[])
+          .where((message) => message.delivery != MessageDelivery.deleted)
+          .toList(growable: false);
       summaries.add(
         ChatSummary(
           chat: entry.value,
@@ -160,14 +174,15 @@ class ChatController extends ChangeNotifier {
   @override
   void dispose() {
     _pollSession++;
+    _reconnectTimer?.cancel();
     _recorder?.dispose();
     super.dispose();
   }
 
   Future<void> bootstrap() async {
     _selectedChatId = _settings.preferredChatId;
-    final archived = _settings.loadMessageArchive(
-        accountId: _settings.activeAccountId);
+    final archived = _sanitizeArchivedMessages(_settings.loadMessageArchive(
+        accountId: _settings.activeAccountId));
     _messagesByChat
       ..clear()
       ..addAll(archived);
@@ -201,13 +216,14 @@ class ChatController extends ChangeNotifier {
     _chats.clear();
     _messagesByChat.clear();
     _unreadByChat.clear();
+    _canSendByChat.clear();
     _selectedChatId = account.preferredChatId;
     _lastError = null;
     notifyListeners();
 
     // Load archive for this account
-    final archived =
-        _settings.loadMessageArchive(accountId: account.id);
+    final archived = _sanitizeArchivedMessages(
+        _settings.loadMessageArchive(accountId: account.id));
     _messagesByChat.addAll(archived);
     _chats.addEntries(archived.entries
         .where((e) => e.value.isNotEmpty)
@@ -241,6 +257,8 @@ class ChatController extends ChangeNotifier {
     }
 
     _pollSession++;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
     _isConnecting = true;
     _lastError = null;
     notifyListeners();
@@ -267,12 +285,25 @@ class ChatController extends ChangeNotifier {
       }
       _isConnecting = false;
       notifyListeners();
+      final selected = selectedChat;
+      if (selected?.isCommunity == true) {
+        unawaited(_refreshSendPermission(selected!.id));
+      }
       _startPolling();
     } catch (error) {
+      _api = null;
+      _bot = null;
       _isConnecting = false;
       _isPolling = false;
       _lastError = _friendlyError(error);
       notifyListeners();
+      if (_isTransientConnectionError(error)) {
+        _scheduleReconnect(
+          token: normalized,
+          apiBaseUrl: apiBaseUrl ?? _settings.apiBaseUrl,
+          preferredChatId: preferredChatId,
+        );
+      }
     }
   }
 
@@ -281,6 +312,10 @@ class ChatController extends ChangeNotifier {
     _chats.putIfAbsent(chatId, () => TelegramChat(id: chatId, type: 'private'));
     _unreadByChat[chatId] = 0;
     unawaited(_notifications.onChatOpened(chatId));
+    final chat = _chats[chatId];
+    if (chat?.isCommunity == true) {
+      unawaited(_refreshSendPermission(chatId));
+    }
     notifyListeners();
   }
 
@@ -330,6 +365,7 @@ class ChatController extends ChangeNotifier {
     if (api == null || bot == null || chat == null || trimmed.trim().isEmpty) {
       return;
     }
+    if (!_ensureCanSend(chat)) return;
 
     final pending = TelegramMessage.localPending(
       chat: chat,
@@ -349,6 +385,7 @@ class ChatController extends ChangeNotifier {
       _replaceMessage(pending.id, sent);
       await _notifications.playSendSound();
     } catch (error) {
+      _handlePossibleWriteRestriction(error, chat.id);
       _replaceMessage(
         pending.id,
         pending.copyWith(delivery: MessageDelivery.failed),
@@ -370,6 +407,7 @@ class ChatController extends ChangeNotifier {
     if (api == null || bot == null || chat == null || paths.isEmpty) {
       return;
     }
+    if (!_ensureCanSend(chat)) return;
 
     for (final path in paths) {
       final file = File(path);
@@ -410,6 +448,7 @@ class ChatController extends ChangeNotifier {
         }
         await _notifications.playSendSound();
       } catch (error) {
+        _handlePossibleWriteRestriction(error, chat.id);
         _replaceMessage(
           pending.id,
           pending.copyWith(delivery: MessageDelivery.failed),
@@ -425,6 +464,7 @@ class ChatController extends ChangeNotifier {
     final bot = _bot;
     final chat = selectedChat;
     if (api == null || bot == null || chat == null) return;
+    if (!_ensureCanSend(chat)) return;
 
     // Prefer sending by fileId
     if (sticker.fileId.isNotEmpty) {
@@ -456,6 +496,7 @@ class ChatController extends ChangeNotifier {
             return;
           } catch (_) {}
         }
+        _handlePossibleWriteRestriction(e, chat.id);
         _replaceMessage(pending.id, pending.copyWith(delivery: MessageDelivery.failed));
         _lastError = _friendlyError(e);
         notifyListeners();
@@ -532,10 +573,10 @@ class ChatController extends ChangeNotifier {
         chatId: message.chat.id,
         messageId: message.messageId,
       );
-      _replaceMessage(
-        message.id,
-        message.copyWith(delivery: MessageDelivery.deleted),
-      );
+      final messages = _messagesByChat[message.chat.id];
+      messages?.removeWhere((item) => item.id == message.id);
+      _persistArchive();
+      notifyListeners();
     } catch (error) {
       _lastError = _friendlyError(error);
       notifyListeners();
@@ -781,6 +822,12 @@ class ChatController extends ChangeNotifier {
         _updateOffset = updateId + 1;
       }
 
+      final membership = _asMap(update['my_chat_member']);
+      if (membership != null) {
+        _handleMyChatMemberUpdate(membership);
+        continue;
+      }
+
       final reaction = _asMap(update['message_reaction']);
       if (reaction != null) {
         _handleReactionUpdate(reaction);
@@ -810,6 +857,10 @@ class ChatController extends ChangeNotifier {
           : message;
       final existed = _containsMessage(normalized.id);
       _addOrReplaceMessage(normalized);
+      if (normalized.chat.isCommunity &&
+          !_canSendByChat.containsKey(normalized.chat.id)) {
+        unawaited(_refreshSendPermission(normalized.chat.id));
+      }
 
       // Auto-save stickers
       if (normalized.attachments.any((a) => a.kind == AttachmentKind.sticker)) {
@@ -848,6 +899,60 @@ class ChatController extends ChangeNotifier {
       }).toList();
       _replaceMessage(message.id, message.copyWith(attachments: updated));
     } catch (_) {}
+  }
+
+  void _handleMyChatMemberUpdate(Map<String, dynamic> update) {
+    final chatJson = _asMap(update['chat']);
+    final member = _asMap(update['new_chat_member']);
+    final chatId = _asInt(chatJson?['id']);
+    if (chatId == null || member == null) return;
+    if (chatJson != null) _chats[chatId] = TelegramChat.fromJson(chatJson);
+    _canSendByChat[chatId] = _memberCanSend(
+      member,
+      chat: _chats[chatId],
+    );
+  }
+
+  Future<void> _refreshSendPermission(int chatId) async {
+    final api = _api;
+    final bot = _bot;
+    final chat = _chats[chatId];
+    if (api == null || bot == null || chat == null || !chat.isCommunity) return;
+    try {
+      final member = await api.getChatMember(chatId: chatId, userId: bot.id);
+      _canSendByChat[chatId] = _memberCanSend(member, chat: chat);
+      notifyListeners();
+    } catch (_) {
+      // Do not disable the composer on an inconclusive network failure. Telegram
+      // will still reject a send and the regular error handling will explain it.
+    }
+  }
+
+  bool _memberCanSend(Map<String, dynamic> member, {TelegramChat? chat}) {
+    final status = _asString(member['status']) ?? '';
+    if (status == 'left' || status == 'kicked') return false;
+    if (status == 'restricted') return member['can_send_messages'] == true;
+    if (chat?.isChannel == true) {
+      return status == 'administrator' || status == 'creator';
+    }
+    return status == 'member' || status == 'administrator' || status == 'creator';
+  }
+
+  bool _ensureCanSend(TelegramChat chat) {
+    if (_canSendByChat[chat.id] ?? true) return true;
+    _lastError = 'لا يمكنك الإرسال: مالك المجموعة أوقف صلاحية إرسال الرسائل للبوت.';
+    notifyListeners();
+    return false;
+  }
+
+  void _handlePossibleWriteRestriction(Object error, int chatId) {
+    final value = error.toString().toLowerCase();
+    if (value.contains('chat_write_forbidden') ||
+        value.contains('not enough rights') ||
+        value.contains('bot was kicked') ||
+        value.contains('forbidden: bot')) {
+      _canSendByChat[chatId] = false;
+    }
   }
 
   void _handleReactionUpdate(Map<String, dynamic> reaction) {
@@ -1080,6 +1185,69 @@ class ChatController extends ChangeNotifier {
       return '';
     }
     return filename.substring(index + 1).toLowerCase();
+  }
+
+  Map<int, List<TelegramMessage>> _sanitizeArchivedMessages(
+    Map<int, List<TelegramMessage>> source,
+  ) {
+    final stickerPathCounts = <String, int>{};
+    for (final messages in source.values) {
+      for (final message in messages) {
+        for (final attachment in message.attachments) {
+          final path = attachment.localPath;
+          if (attachment.kind == AttachmentKind.sticker && path != null) {
+            stickerPathCounts[path] = (stickerPathCounts[path] ?? 0) + 1;
+          }
+        }
+      }
+    }
+    return source.map((chatId, messages) {
+      final cleaned = messages
+          .where((message) => message.delivery != MessageDelivery.deleted)
+          .map((message) {
+            final attachments = message.attachments.map((attachment) {
+              final path = attachment.localPath;
+              if (attachment.kind == AttachmentKind.sticker &&
+                  path != null &&
+                  (stickerPathCounts[path] ?? 0) > 1) {
+                return attachment.copyWith(clearLocalPath: true);
+              }
+              return attachment;
+            }).toList(growable: false);
+            return message.copyWith(attachments: attachments);
+          })
+          .toList(growable: true);
+      return MapEntry(chatId, cleaned);
+    });
+  }
+
+  void _scheduleReconnect({
+    required String token,
+    required String apiBaseUrl,
+    int? preferredChatId,
+  }) {
+    if (_reconnectTimer?.isActive == true) return;
+    _reconnectTimer = Timer(const Duration(seconds: 5), () {
+      _reconnectTimer = null;
+      if (_api != null || _isConnecting) return;
+      unawaited(connect(
+        token: token,
+        apiBaseUrl: apiBaseUrl,
+        preferredChatId: preferredChatId,
+        persist: false,
+      ));
+    });
+  }
+
+  bool _isTransientConnectionError(Object error) {
+    if (error is SocketException || error is TimeoutException) return true;
+    if (error is TelegramApiException) return false;
+    final text = error.toString().toLowerCase();
+    return text.contains('socket') ||
+        text.contains('connection') ||
+        text.contains('network') ||
+        text.contains('timed out') ||
+        text.contains('failed host lookup');
   }
 
   String _friendlyError(Object error) {

@@ -34,6 +34,10 @@ class TelegramChat {
   final String? firstName;
   final String? lastName;
 
+  bool get isGroup => type == 'group' || type == 'supergroup';
+  bool get isChannel => type == 'channel';
+  bool get isCommunity => isGroup || isChannel;
+
   String get displayTitle {
     final resolved =
         title ??
@@ -149,7 +153,7 @@ class TelegramAttachment {
     return '${(size / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
-  TelegramAttachment copyWith({String? localPath}) {
+  TelegramAttachment copyWith({String? localPath, bool clearLocalPath = false}) {
     return TelegramAttachment(
       kind: kind,
       fileId: fileId,
@@ -162,7 +166,7 @@ class TelegramAttachment {
       duration: duration,
       emoji: emoji,
       description: description,
-      localPath: localPath ?? this.localPath,
+      localPath: clearLocalPath ? null : (localPath ?? this.localPath),
       isAnimatedSticker: isAnimatedSticker,
       isVideoSticker: isVideoSticker,
     );

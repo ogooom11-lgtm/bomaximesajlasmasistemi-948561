@@ -4,6 +4,7 @@ import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart' as intl;
 import 'package:lottie/lottie.dart';
 import 'package:media_kit/media_kit.dart';
@@ -691,18 +692,43 @@ class ChatTile extends StatelessWidget {
       duration: const Duration(milliseconds: 180),
       decoration: BoxDecoration(
         color: selected ? scheme.primaryContainer.withValues(alpha: 0.72) : Colors.transparent,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: selected ? scheme.primary.withValues(alpha: 0.34) : Colors.transparent),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: selected ? scheme.primary.withValues(alpha: 0.34) : scheme.outlineVariant.withValues(alpha: 0.5)),
+        boxShadow: selected ? <BoxShadow>[BoxShadow(color: scheme.primary.withValues(alpha: 0.09), blurRadius: 14, offset: const Offset(0, 4))] : const <BoxShadow>[],
       ),
       child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
         onTap: onTap,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-        leading: CircleAvatar(
-          backgroundColor: selected ? scheme.primary : scheme.surfaceContainerHighest,
-          foregroundColor: selected ? scheme.onPrimary : scheme.onSurfaceVariant,
-          child: Text(title.characters.first.toUpperCase()),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        leading: Container(
+          width: 46,
+          height: 46,
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topRight,
+              end: Alignment.bottomLeft,
+              colors: summary.chat.isCommunity
+                  ? <Color>[scheme.tertiary, scheme.secondary]
+                  : <Color>[scheme.primary, scheme.primary.withValues(alpha: 0.72)],
+            ),
+            borderRadius: BorderRadius.circular(summary.chat.isCommunity ? 14 : 23),
+            boxShadow: <BoxShadow>[
+              BoxShadow(color: (summary.chat.isCommunity ? scheme.tertiary : scheme.primary).withValues(alpha: 0.2), blurRadius: 10, offset: const Offset(0, 3)),
+            ],
+          ),
+          child: Icon(summary.chat.isGroup ? Icons.groups_rounded : summary.chat.isChannel ? Icons.campaign_rounded : Icons.person_rounded, color: Colors.white),
         ),
-        title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700)),
+        title: Row(children: <Widget>[
+          Expanded(child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w800))),
+          if (summary.chat.isCommunity) ...<Widget>[
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+              decoration: BoxDecoration(color: scheme.tertiaryContainer, borderRadius: BorderRadius.circular(999)),
+              child: Text(summary.chat.isChannel ? 'قناة' : 'مجموعة', style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800, color: scheme.onTertiaryContainer)),
+            ),
+          ],
+        ]),
         subtitle: Text(last?.previewText ?? 'جاهزة للإرسال', maxLines: 1, overflow: TextOverflow.ellipsis),
         trailing: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -837,7 +863,7 @@ class _ConversationPaneState extends State<ConversationPane> {
                       itemCount: messages.length,
                       itemBuilder: (context, index) {
                         final message = messages[index];
-                        return MessageBubble(message: message, controller: widget.controller, stickerStore: widget.stickerStore, onReply: () => setState(() => _replyTo = message), onEdit: () => showEditDialog(context, widget.controller, message));
+                        return MessageBubble(key: ValueKey(message.id), message: message, controller: widget.controller, stickerStore: widget.stickerStore, onReply: () => setState(() => _replyTo = message), onEdit: () => showEditDialog(context, widget.controller, message));
                       },
                     ),
                   ),
@@ -849,9 +875,21 @@ class _ConversationPaneState extends State<ConversationPane> {
           await widget.controller.sendSticker(sticker, replyToMessageId: replyId);
           _scheduleScroll();
         }, onClose: () => setState(() => _showStickerPanel = false)),
+        if (widget.controller.selectedChatSendRestriction != null)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            color: Theme.of(context).colorScheme.errorContainer,
+            child: Row(children: <Widget>[
+              Icon(Icons.lock_outline, size: 18, color: Theme.of(context).colorScheme.onErrorContainer),
+              const SizedBox(width: 8),
+              Expanded(child: Text(widget.controller.selectedChatSendRestriction!, style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer, fontWeight: FontWeight.w700))),
+            ]),
+          ),
         MessageComposer(
           controller: _composer,
           replyTo: _replyTo,
+          enabled: widget.controller.canSendToSelectedChat,
           isRecording: widget.controller.isRecording,
           showStickerPanel: _showStickerPanel,
           onToggleStickerPanel: () => setState(() => _showStickerPanel = !_showStickerPanel),
@@ -925,9 +963,23 @@ class ConversationHeader extends StatelessWidget {
       child: Row(
         children: <Widget>[
           if (compact) IconButton(tooltip: 'رجوع', onPressed: onBack, icon: const Icon(Icons.arrow_back)),
-          CircleAvatar(backgroundColor: scheme.primaryContainer, foregroundColor: scheme.onPrimaryContainer, child: Text(title.characters.first.toUpperCase())),
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(colors: chat.isCommunity ? <Color>[scheme.tertiary, scheme.secondary] : <Color>[scheme.primary, scheme.primaryContainer]),
+              borderRadius: BorderRadius.circular(chat.isCommunity ? 14 : 22),
+            ),
+            child: Icon(chat.isGroup ? Icons.groups_rounded : chat.isChannel ? Icons.campaign_rounded : Icons.person_rounded, color: Colors.white),
+          ),
           const SizedBox(width: 12),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)), Text('Chat ID: ${chat.id}', textDirection: TextDirection.ltr, style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant))])),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+            Row(children: <Widget>[
+              Flexible(child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900))),
+              if (chat.isCommunity) ...<Widget>[const SizedBox(width: 8), Icon(Icons.verified_rounded, size: 16, color: scheme.tertiary)],
+            ]),
+            Text(chat.isChannel ? 'قناة · Chat ID: ${chat.id}' : chat.isGroup ? 'مجموعة · Chat ID: ${chat.id}' : 'Chat ID: ${chat.id}', textDirection: TextDirection.ltr, style: TextStyle(fontSize: 12, color: chat.isCommunity ? scheme.tertiary : scheme.onSurfaceVariant, fontWeight: chat.isCommunity ? FontWeight.w700 : FontWeight.normal)),
+          ])),
           Tooltip(message: 'تحديث', child: IconButton(onPressed: onRefresh, icon: const Icon(Icons.refresh))),
           Tooltip(message: 'تسمية المحادثة', child: IconButton(onPressed: () => showRenameChatDialog(context, settings, chat), icon: const Icon(Icons.edit_note))),
           Tooltip(message: 'الإعدادات', child: IconButton(onPressed: onSettings, icon: const Icon(Icons.tune))),
@@ -1028,6 +1080,7 @@ class MessageComposer extends StatelessWidget {
     super.key,
     required this.controller,
     required this.replyTo,
+    required this.enabled,
     required this.isRecording,
     required this.showStickerPanel,
     required this.onToggleStickerPanel,
@@ -1041,6 +1094,7 @@ class MessageComposer extends StatelessWidget {
 
   final TextEditingController controller;
   final TelegramMessage? replyTo;
+  final bool enabled;
   final bool isRecording;
   final bool showStickerPanel;
   final VoidCallback onToggleStickerPanel;
@@ -1076,11 +1130,11 @@ class MessageComposer extends StatelessWidget {
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: <Widget>[
-                AttachmentMenu(onPickFiles: onPickFiles),
+                AttachmentMenu(enabled: enabled, onPickFiles: onPickFiles),
                 const SizedBox(width: 4),
-                Tooltip(message: 'الملصقات', child: Badge(label: Text(stickerStore.stickers.length.toString()), isLabelVisible: stickerStore.stickers.isNotEmpty, child: IconButton.filledTonal(onPressed: onToggleStickerPanel, icon: Icon(showStickerPanel ? Icons.keyboard : Icons.emoji_emotions), style: IconButton.styleFrom(backgroundColor: showStickerPanel ? scheme.primaryContainer : null)))),
+                Tooltip(message: 'الملصقات', child: Badge(label: Text(stickerStore.stickers.length.toString()), isLabelVisible: stickerStore.stickers.isNotEmpty, child: IconButton.filledTonal(onPressed: enabled ? onToggleStickerPanel : null, icon: Icon(showStickerPanel ? Icons.keyboard : Icons.emoji_emotions), style: IconButton.styleFrom(backgroundColor: showStickerPanel ? scheme.primaryContainer : null)))),
                 const SizedBox(width: 4),
-                EmojiButton(onEmoji: (emoji) {
+                EmojiButton(enabled: enabled, onEmoji: (emoji) {
                   final value = controller.text;
                   final selection = controller.selection;
                   final start = selection.isValid ? selection.start : value.length;
@@ -1089,12 +1143,12 @@ class MessageComposer extends StatelessWidget {
                   controller.selection = TextSelection.collapsed(offset: start + emoji.length);
                 }),
                 const SizedBox(width: 4),
-                Tooltip(message: isRecording ? 'إيقاف وإرسال التسجيل' : 'تسجيل صوت', child: IconButton.filledTonal(onPressed: onToggleRecording, icon: Icon(isRecording ? Icons.stop : Icons.mic), color: isRecording ? scheme.error : null)),
+                Tooltip(message: isRecording ? 'إيقاف وإرسال التسجيل' : 'تسجيل صوت', child: IconButton.filledTonal(onPressed: enabled ? onToggleRecording : null, icon: Icon(isRecording ? Icons.stop : Icons.mic), color: isRecording ? scheme.error : null)),
                 if (isRecording) ...<Widget>[const SizedBox(width: 6), Tooltip(message: 'إلغاء التسجيل', child: IconButton(onPressed: onCancelRecording, icon: const Icon(Icons.close)))],
                 const SizedBox(width: 8),
-                Expanded(child: TextField(controller: controller, minLines: 1, maxLines: 7, textInputAction: TextInputAction.newline, decoration: const InputDecoration(hintText: 'اكتب رسالة...', alignLabelWithHint: true))),
+                Expanded(child: TextField(enabled: enabled, controller: controller, minLines: 1, maxLines: 7, textInputAction: TextInputAction.newline, decoration: InputDecoration(hintText: enabled ? 'اكتب رسالة...' : 'الإرسال متوقف من مالك المجموعة', alignLabelWithHint: true, prefixIcon: enabled ? null : const Icon(Icons.lock_outline)))),
                 const SizedBox(width: 8),
-                FilledButton(onPressed: onSend, style: FilledButton.styleFrom(minimumSize: const Size(48, 48), padding: EdgeInsets.zero), child: const Icon(Icons.send)),
+                FilledButton(onPressed: enabled ? onSend : null, style: FilledButton.styleFrom(minimumSize: const Size(48, 48), padding: EdgeInsets.zero, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15))), child: const Icon(Icons.send_rounded)),
               ],
             ),
           ],
@@ -1105,14 +1159,16 @@ class MessageComposer extends StatelessWidget {
 }
 
 class AttachmentMenu extends StatelessWidget {
-  const AttachmentMenu({super.key, required this.onPickFiles});
+  const AttachmentMenu({super.key, required this.enabled, required this.onPickFiles});
 
+  final bool enabled;
   final Future<void> Function(MessageFileMode mode) onPickFiles;
 
   @override
   Widget build(BuildContext context) {
     return PopupMenuButton<MessageFileMode>(
       tooltip: 'إرفاق',
+      enabled: enabled,
       icon: const Icon(Icons.attach_file),
       onSelected: onPickFiles,
       itemBuilder: (context) => const <PopupMenuEntry<MessageFileMode>>[
@@ -1128,8 +1184,9 @@ class AttachmentMenu extends StatelessWidget {
 }
 
 class EmojiButton extends StatelessWidget {
-  const EmojiButton({super.key, required this.onEmoji});
+  const EmojiButton({super.key, required this.enabled, required this.onEmoji});
 
+  final bool enabled;
   final ValueChanged<String> onEmoji;
 
   @override
@@ -1137,6 +1194,7 @@ class EmojiButton extends StatelessWidget {
     const emojis = <String>['👍', '❤️', '😂', '🔥', '👏', '🙏', '😍', '✅'];
     return PopupMenuButton<String>(
       tooltip: 'إيموجي',
+      enabled: enabled,
       icon: const Icon(Icons.mood),
       onSelected: onEmoji,
       itemBuilder: (context) => emojis.map((emoji) => PopupMenuItem<String>(value: emoji, child: Text(emoji, style: const TextStyle(fontSize: 22)))).toList(),
@@ -1215,10 +1273,10 @@ class _MessageBubbleState extends State<MessageBubble> {
                           if (message.attachments.isNotEmpty)
                             ...message.attachments.map((attachment) => Padding(
                                   padding: const EdgeInsets.only(bottom: 8),
-                                  child: AttachmentPreview(message: message, attachment: attachment, controller: widget.controller, maxWidth: maxBubbleWidth - 24),
+                                  child: AttachmentPreview(key: ValueKey('${message.id}:${attachment.uniqueId ?? attachment.fileId ?? attachment.fileName}'), message: message, attachment: attachment, controller: widget.controller, maxWidth: maxBubbleWidth - 24),
                                 )),
                           if (body != null && body.trim().isNotEmpty) ...<Widget>[
-                            ConstrainedBox(constraints: BoxConstraints(maxWidth: maxBubbleWidth - 24), child: SelectableText(body, style: TextStyle(color: textColor, height: 1.34, fontSize: 14.5))),
+                            ConstrainedBox(constraints: BoxConstraints(maxWidth: maxBubbleWidth - 24), child: CopyableNumberText(text: body, style: TextStyle(color: textColor, height: 1.34, fontSize: 14.5))),
                           ],
                           if (url != null) ...<Widget>[const SizedBox(height: 8), LinkPreviewCard(url: url, maxWidth: maxBubbleWidth - 24)],
                           const SizedBox(height: 5),
@@ -1265,6 +1323,68 @@ class _MessageBubbleState extends State<MessageBubble> {
         MessageDelivery.deleted => 'محذوفة',
         MessageDelivery.received => 'واردة',
       };
+}
+
+class CopyableNumberText extends StatelessWidget {
+  const CopyableNumberText({super.key, required this.text, required this.style});
+
+  final String text;
+  final TextStyle style;
+
+  static final RegExp _numberPattern = RegExp(
+    r'[0-9٠-٩۰-۹](?:[.,،٬]?[0-9٠-٩۰-۹]){3,}',
+  );
+  static final RegExp _digitPattern = RegExp(r'[0-9٠-٩۰-۹]');
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final spans = <InlineSpan>[];
+    var cursor = 0;
+    for (final match in _numberPattern.allMatches(text)) {
+      if (match.start > cursor) {
+        spans.add(TextSpan(text: text.substring(cursor, match.start)));
+      }
+      final displayed = match.group(0)!;
+      final copied = _digitPattern
+          .allMatches(displayed)
+          .map((match) => match.group(0)!)
+          .join();
+      spans.add(WidgetSpan(
+        alignment: PlaceholderAlignment.baseline,
+        baseline: TextBaseline.alphabetic,
+        child: Tooltip(
+          message: 'اضغط لنسخ الرقم بدون فواصل',
+          child: InkWell(
+            borderRadius: BorderRadius.circular(6),
+            onTap: () async {
+              await Clipboard.setData(ClipboardData(text: copied));
+              if (context.mounted) {
+                ScaffoldMessenger.of(context)
+                  ..hideCurrentSnackBar()
+                  ..showSnackBar(SnackBar(
+                    content: Text('تم نسخ الرقم: $copied'),
+                    duration: const Duration(seconds: 2),
+                  ));
+              }
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+              decoration: BoxDecoration(
+                color: scheme.tertiaryContainer.withValues(alpha: 0.72),
+                borderRadius: BorderRadius.circular(5),
+                border: Border(bottom: BorderSide(color: scheme.tertiary, width: 1.5)),
+              ),
+              child: Text(displayed, style: style.copyWith(color: scheme.tertiary, fontWeight: FontWeight.w800)),
+            ),
+          ),
+        ),
+      ));
+      cursor = match.end;
+    }
+    if (cursor < text.length) spans.add(TextSpan(text: text.substring(cursor)));
+    return Text.rich(TextSpan(style: style, children: spans));
+  }
 }
 
 class MessageActionRail extends StatelessWidget {

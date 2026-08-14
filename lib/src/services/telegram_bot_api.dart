@@ -39,6 +39,17 @@ class TelegramBotApi {
     return BotIdentity.fromJson(_asMap(data['result']) ?? {});
   }
 
+  Future<Map<String, dynamic>> getChatMember({
+    required int chatId,
+    required int userId,
+  }) async {
+    final data = await _postJson('getChatMember', <String, Object?>{
+      'chat_id': chatId,
+      'user_id': userId,
+    });
+    return _asMap(data['result']) ?? const <String, dynamic>{};
+  }
+
   Future<List<Map<String, dynamic>>> getUpdates({
     required int? offset,
     int timeoutSeconds = 25,
@@ -51,6 +62,7 @@ class TelegramBotApi {
         'channel_post',
         'edited_channel_post',
         'message_reaction',
+        'my_chat_member',
       ],
     };
     if (offset != null) {
@@ -244,7 +256,7 @@ class TelegramBotApi {
     final filePath = await getFilePath(fileId);
 
     final directory = saveToDownloads ? await _downloadDirectory() : await _cacheDirectory();
-    final filename = _safeFilename(attachment.fileName, filePath);
+    final filename = _safeFilename(attachment, filePath);
     final file = File('${directory.path}${Platform.pathSeparator}$filename');
 
     // Streaming download to support large files (up to 2GB via Local Bot API)
@@ -331,16 +343,28 @@ class TelegramBotApi {
     return dir;
   }
 
-  String _safeFilename(String? preferred, String filePath) {
+  String _safeFilename(TelegramAttachment attachment, String filePath) {
     final fallback = filePath.split('/').last;
+    final preferred = attachment.fileName;
     final name = (preferred == null || preferred.trim().isEmpty) ? fallback : preferred;
     final cleaned = name.replaceAll(RegExp(r'[<>:\"/\\|?*\x00-\x1F]'), '_');
-    if (cleaned.trim().isEmpty) {
-      return 'telegram_file_${DateTime.now().millisecondsSinceEpoch}';
-    }
-    // Ensure uniqueness for cache to avoid collisions
-    if (cleaned.contains('telegram_file_')) return cleaned;
-    return cleaned;
+    final usableName = cleaned.trim().isEmpty ? 'telegram_file' : cleaned;
+
+    // Telegram commonly calls every sticker "sticker.webp". Reusing that name
+    // overwrote the old file, which made all rendered stickers turn into the
+    // latest one. A stable Telegram unique id gives every attachment its own
+    // immutable cache file while still retaining a useful extension.
+    final identity = attachment.uniqueId ?? attachment.fileId ?? filePath;
+    final safeIdentity = identity
+        .replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')
+        .replaceAll(RegExp(r'_+'), '_');
+    final dot = usableName.lastIndexOf('.');
+    final base = dot > 0 ? usableName.substring(0, dot) : usableName;
+    final extension = dot > 0 ? usableName.substring(dot) : '';
+    final suffix = safeIdentity.isEmpty
+        ? DateTime.now().microsecondsSinceEpoch.toString()
+        : safeIdentity;
+    return '${base}_$suffix$extension';
   }
 }
 
