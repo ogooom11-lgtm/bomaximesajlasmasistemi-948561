@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
@@ -757,6 +756,10 @@ class _ConversationPaneState extends State<ConversationPane> {
     }
   }
 
+  Future<void> _openStickers() async {
+    await showStickerGallery(context, widget.controller);
+  }
+
   @override
   Widget build(BuildContext context) {
     final chat = widget.controller.selectedChat;
@@ -826,6 +829,7 @@ class _ConversationPaneState extends State<ConversationPane> {
           onSend: _send,
           onToggleRecording: _toggleRecording,
           onPickFiles: _pickFiles,
+          onOpenStickers: _openStickers,
         ),
       ],
     );
@@ -996,6 +1000,7 @@ class MessageComposer extends StatelessWidget {
     required this.onSend,
     required this.onToggleRecording,
     required this.onPickFiles,
+    required this.onOpenStickers,
     this.blocked = false,
   });
 
@@ -1007,6 +1012,7 @@ class MessageComposer extends StatelessWidget {
   final Future<void> Function() onSend;
   final Future<void> Function() onToggleRecording;
   final Future<void> Function(MessageFileMode mode) onPickFiles;
+  final Future<void> Function() onOpenStickers;
   final bool blocked;
 
   @override
@@ -1087,6 +1093,14 @@ class MessageComposer extends StatelessWidget {
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: <Widget>[
+                Tooltip(
+                  message: 'الملصقات المحفوظة',
+                  child: IconButton(
+                    onPressed: blocked ? null : onOpenStickers,
+                    icon: const Icon(Icons.emoji_emotions_outlined),
+                  ),
+                ),
+                const SizedBox(width: 4),
                 AttachmentMenu(onPickFiles: onPickFiles, enabled: !blocked),
                 const SizedBox(width: 8),
                 EmojiButton(
@@ -1994,7 +2008,8 @@ class _AttachmentPreviewState extends State<AttachmentPreview> {
       mainAxisSize: MainAxisSize.min,
       children: <Widget>[
         preview,
-        if (widget.attachment.canDownload) ...<Widget>[
+        if (widget.attachment.canDownload &&
+            widget.attachment.kind != AttachmentKind.sticker) ...<Widget>[
           const SizedBox(height: 5),
           TextButton.icon(
             onPressed: _saving ? null : _saveToDevice,
@@ -2989,6 +3004,223 @@ String _formatDuration(Duration duration) {
     return '$hours:$minutes:$seconds';
   }
   return '$minutes:$seconds';
+}
+
+Future<void> showStickerGallery(
+  BuildContext context,
+  ChatController controller,
+) async {
+  await showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (context) => StickerGallerySheet(controller: controller),
+  );
+}
+
+class StickerGallerySheet extends StatefulWidget {
+  const StickerGallerySheet({super.key, required this.controller});
+
+  final ChatController controller;
+
+  @override
+  State<StickerGallerySheet> createState() => _StickerGallerySheetState();
+}
+
+class _StickerGallerySheetState extends State<StickerGallerySheet> {
+  List<File>? _stickers;
+  bool _sending = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final stickers = await widget.controller.stickerStore.listStickers();
+    if (mounted) {
+      setState(() => _stickers = stickers);
+    }
+  }
+
+  Future<void> _send(File file) async {
+    if (_sending) {
+      return;
+    }
+    setState(() => _sending = true);
+    await widget.controller.sendFiles(
+      <String>[file.path],
+      mode: MessageFileMode.sticker,
+    );
+    if (mounted) {
+      Navigator.pop(context);
+    }
+  }
+
+  Future<void> _delete(File file) async {
+    final confirmed = await confirmDeleteSticker(context);
+    if (!confirmed) {
+      return;
+    }
+    await widget.controller.stickerStore.deleteSticker(file);
+    await _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final stickers = _stickers;
+    final height = MediaQuery.sizeOf(context).height * 0.62;
+    return Container(
+      height: height,
+      decoration: BoxDecoration(
+        color: scheme.surface,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: Column(
+        children: <Widget>[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 14, 12, 10),
+            child: Row(
+              children: <Widget>[
+                Icon(Icons.emoji_emotions_outlined, color: scheme.primary),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'الملصقات المحفوظة',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'إغلاق',
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.close),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: stickers == null
+                ? const Center(child: CircularProgressIndicator())
+                : stickers.isEmpty
+                ? const EmptyPanel(
+                    icon: Icons.emoji_emotions_outlined,
+                    title: 'لا توجد ملصقات بعد',
+                    subtitle: 'عند استلام ملصق سيُحفظ هنا تلقائياً.',
+                  )
+                : GridView.builder(
+                    padding: const EdgeInsets.all(16),
+                    gridDelegate:
+                        const SliverGridDelegateWithMaxCrossAxisExtent(
+                          maxCrossAxisExtent: 140,
+                          mainAxisSpacing: 10,
+                          crossAxisSpacing: 10,
+                        ),
+                    itemCount: stickers.length,
+                    itemBuilder: (context, index) {
+                      final file = stickers[index];
+                      return _StickerTile(
+                        file: file,
+                        onTap: () => _send(file),
+                        onLongPress: () => _delete(file),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StickerTile extends StatelessWidget {
+  const _StickerTile({
+    required this.file,
+    required this.onTap,
+    required this.onLongPress,
+  });
+
+  final File file;
+  final VoidCallback onTap;
+  final VoidCallback onLongPress;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return InkWell(
+      onTap: onTap,
+      onLongPress: onLongPress,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: scheme.outlineVariant),
+        ),
+        child: _StickerThumbnail(path: file.path),
+      ),
+    );
+  }
+}
+
+class _StickerThumbnail extends StatelessWidget {
+  const _StickerThumbnail({required this.path});
+
+  final String path;
+
+  @override
+  Widget build(BuildContext context) {
+    final file = File(path);
+    if (_extension(path) == 'tgs') {
+      try {
+        final decoded = gzip.decode(file.readAsBytesSync());
+        return Lottie.memory(
+          Uint8List.fromList(decoded),
+          repeat: true,
+          animate: true,
+          fit: BoxFit.contain,
+        );
+      } catch (_) {
+        return const Center(
+          child: Icon(Icons.emoji_emotions_outlined),
+        );
+      }
+    }
+    return Image.file(
+      file,
+      fit: BoxFit.contain,
+      errorBuilder: (context, _, __) => const Center(
+        child: Icon(Icons.broken_image_outlined),
+      ),
+    );
+  }
+}
+
+Future<bool> confirmDeleteSticker(BuildContext context) async {
+  final result = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('حذف الملصق؟'),
+      content: const Text('سيتم حذف الملصق من المجموعة المحفوظة.'),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('إلغاء'),
+        ),
+        FilledButton.icon(
+          onPressed: () => Navigator.pop(context, true),
+          icon: const Icon(Icons.delete_outline),
+          label: const Text('حذف'),
+        ),
+      ],
+    ),
+  );
+  return result ?? false;
 }
 
 Future<void> showAddChatDialog(

@@ -9,6 +9,7 @@ import 'package:record/record.dart';
 import '../models/telegram_models.dart';
 import 'notification_service.dart';
 import 'settings_store.dart';
+import 'sticker_store.dart';
 import 'telegram_bot_api.dart';
 
 enum MessageFileMode {
@@ -43,6 +44,7 @@ class ChatController extends ChangeNotifier {
 
   final SettingsStore _settings;
   final NotificationService _notifications;
+  final StickerStore stickerStore = StickerStore();
 
   TelegramBotApi? _api;
   BotIdentity? _bot;
@@ -884,8 +886,29 @@ class ChatController extends ChangeNotifier {
     }
     messages.sort((a, b) => a.date.compareTo(b.date));
     _selectedChatId ??= message.chat.id;
+    _maybeAutoSaveStickers(message);
     _persistArchive();
     notifyListeners();
+  }
+
+  /// Persists any stickers carried by a newly received/sent message so they
+  /// show up in the sticker gallery. Runs in the background and never blocks
+  /// the UI or the polling loop.
+  void _maybeAutoSaveStickers(TelegramMessage message) {
+    if (message.delivery == MessageDelivery.sending ||
+        message.delivery == MessageDelivery.failed) {
+      return;
+    }
+    final api = _api;
+    if (api == null) {
+      return;
+    }
+    for (final attachment in message.attachments) {
+      if (attachment.kind != AttachmentKind.sticker) {
+        continue;
+      }
+      unawaited(stickerStore.saveSticker(attachment, api));
+    }
   }
 
   void _replaceMessage(String oldId, TelegramMessage replacement) {
