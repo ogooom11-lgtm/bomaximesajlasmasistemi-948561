@@ -3,7 +3,9 @@ import 'dart:typed_data';
 import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart' as intl;
 import 'package:lottie/lottie.dart';
 import 'package:media_kit/media_kit.dart';
@@ -562,13 +564,14 @@ class ChatTile extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final last = summary.lastMessage;
     final title = displayChatTitle(settings, summary.chat);
+    final isGroup = summary.chat.isGroup;
     return AnimatedContainer(
       duration: const Duration(milliseconds: 180),
       decoration: BoxDecoration(
         color: selected
             ? scheme.primaryContainer.withValues(alpha: 0.72)
             : Colors.transparent,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(10),
         border: Border.all(
           color: selected
               ? scheme.primary.withValues(alpha: 0.34)
@@ -577,21 +580,42 @@ class ChatTile extends StatelessWidget {
       ),
       child: ListTile(
         onTap: onTap,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         leading: CircleAvatar(
           backgroundColor: selected
               ? scheme.primary
+              : isGroup
+              ? scheme.tertiaryContainer
               : scheme.surfaceContainerHighest,
           foregroundColor: selected
               ? scheme.onPrimary
+              : isGroup
+              ? scheme.onTertiaryContainer
               : scheme.onSurfaceVariant,
-          child: Text(title.characters.first.toUpperCase()),
+          child: isGroup
+              ? const Icon(Icons.group_outlined, size: 20)
+              : Text(title.characters.first.toUpperCase()),
         ),
-        title: Text(
-          title,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontWeight: FontWeight.w700),
+        title: Row(
+          children: <Widget>[
+            Flexible(
+              child: Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ),
+            if (isGroup) ...<Widget>[
+              const SizedBox(width: 6),
+              Icon(
+                Icons.group_outlined,
+                size: 14,
+                color: scheme.tertiary,
+              ),
+            ],
+          ],
         ),
         subtitle: Text(
           last?.previewText ?? 'جاهزة للإرسال',
@@ -796,6 +820,7 @@ class _ConversationPaneState extends State<ConversationPane> {
           controller: _composer,
           replyTo: _replyTo,
           isRecording: widget.controller.isRecording,
+          blocked: widget.controller.isSelectedChatSendBlocked,
           onCancelReply: () => setState(() => _replyTo = null),
           onCancelRecording: widget.controller.cancelVoiceRecording,
           onSend: _send,
@@ -885,6 +910,7 @@ class ConversationHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final title = displayChatTitle(settings, chat);
+    final isGroup = chat.isGroup;
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
       child: Row(
@@ -896,9 +922,15 @@ class ConversationHeader extends StatelessWidget {
               icon: const Icon(Icons.arrow_back),
             ),
           CircleAvatar(
-            backgroundColor: scheme.primaryContainer,
-            foregroundColor: scheme.onPrimaryContainer,
-            child: Text(title.characters.first.toUpperCase()),
+            backgroundColor: isGroup
+                ? scheme.tertiaryContainer
+                : scheme.primaryContainer,
+            foregroundColor: isGroup
+                ? scheme.onTertiaryContainer
+                : scheme.onPrimaryContainer,
+            child: isGroup
+                ? const Icon(Icons.group_outlined)
+                : Text(title.characters.first.toUpperCase()),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -914,7 +946,9 @@ class ConversationHeader extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  'Chat ID: ${chat.id}',
+                  isGroup
+                      ? 'مجموعة · Chat ID: ${chat.id}'
+                      : 'Chat ID: ${chat.id}',
                   textDirection: TextDirection.ltr,
                   style: TextStyle(
                     fontSize: 12,
@@ -962,6 +996,7 @@ class MessageComposer extends StatelessWidget {
     required this.onSend,
     required this.onToggleRecording,
     required this.onPickFiles,
+    this.blocked = false,
   });
 
   final TextEditingController controller;
@@ -972,6 +1007,7 @@ class MessageComposer extends StatelessWidget {
   final Future<void> Function() onSend;
   final Future<void> Function() onToggleRecording;
   final Future<void> Function(MessageFileMode mode) onPickFiles;
+  final bool blocked;
 
   @override
   Widget build(BuildContext context) {
@@ -986,6 +1022,31 @@ class MessageComposer extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
+            if (blocked) ...<Widget>[
+              Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 9,
+                ),
+                decoration: BoxDecoration(
+                  color: scheme.errorContainer,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: <Widget>[
+                    Icon(Icons.block, size: 18, color: scheme.onErrorContainer),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'لا يمكنك الإرسال — قام مالك المجموعة بتقييد البوت.',
+                        style: TextStyle(color: scheme.onErrorContainer),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             AnimatedSwitcher(
               duration: const Duration(milliseconds: 180),
               child: replyTo == null
@@ -1026,9 +1087,10 @@ class MessageComposer extends StatelessWidget {
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: <Widget>[
-                AttachmentMenu(onPickFiles: onPickFiles),
+                AttachmentMenu(onPickFiles: onPickFiles, enabled: !blocked),
                 const SizedBox(width: 8),
                 EmojiButton(
+                  enabled: !blocked,
                   onEmoji: (emoji) {
                     final value = controller.text;
                     final selection = controller.selection;
@@ -1048,7 +1110,7 @@ class MessageComposer extends StatelessWidget {
                 Tooltip(
                   message: isRecording ? 'إيقاف وإرسال التسجيل' : 'تسجيل صوت',
                   child: IconButton.filledTonal(
-                    onPressed: onToggleRecording,
+                    onPressed: blocked ? null : onToggleRecording,
                     icon: Icon(isRecording ? Icons.stop : Icons.mic),
                     color: isRecording ? scheme.error : null,
                   ),
@@ -1067,18 +1129,21 @@ class MessageComposer extends StatelessWidget {
                 Expanded(
                   child: TextField(
                     controller: controller,
+                    enabled: !blocked,
                     minLines: 1,
                     maxLines: 7,
                     textInputAction: TextInputAction.newline,
-                    decoration: const InputDecoration(
-                      hintText: 'اكتب رسالة...',
+                    decoration: InputDecoration(
+                      hintText: blocked
+                          ? 'الإرسال غير متاح في هذه المجموعة'
+                          : 'اكتب رسالة...',
                       alignLabelWithHint: true,
                     ),
                   ),
                 ),
                 const SizedBox(width: 8),
                 FilledButton(
-                  onPressed: onSend,
+                  onPressed: blocked ? null : onSend,
                   style: FilledButton.styleFrom(
                     minimumSize: const Size(48, 48),
                     padding: EdgeInsets.zero,
@@ -1095,14 +1160,20 @@ class MessageComposer extends StatelessWidget {
 }
 
 class AttachmentMenu extends StatelessWidget {
-  const AttachmentMenu({super.key, required this.onPickFiles});
+  const AttachmentMenu({
+    super.key,
+    required this.onPickFiles,
+    this.enabled = true,
+  });
 
   final Future<void> Function(MessageFileMode mode) onPickFiles;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
     return PopupMenuButton<MessageFileMode>(
       tooltip: 'إرفاق',
+      enabled: enabled,
       icon: const Icon(Icons.attach_file),
       onSelected: onPickFiles,
       itemBuilder: (context) => const <PopupMenuEntry<MessageFileMode>>[
@@ -1142,15 +1213,21 @@ class AttachmentMenu extends StatelessWidget {
 }
 
 class EmojiButton extends StatelessWidget {
-  const EmojiButton({super.key, required this.onEmoji});
+  const EmojiButton({
+    super.key,
+    required this.onEmoji,
+    this.enabled = true,
+  });
 
   final ValueChanged<String> onEmoji;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
     const emojis = <String>['👍', '❤️', '😂', '🔥', '👏', '🙏', '😍', '✅'];
     return PopupMenuButton<String>(
       tooltip: 'إيموجي',
+      enabled: enabled,
       icon: const Icon(Icons.mood),
       onSelected: onEmoji,
       itemBuilder: (context) => emojis
@@ -1326,12 +1403,22 @@ class _MessageBubbleState extends State<MessageBubble> {
                               constraints: BoxConstraints(
                                 maxWidth: maxBubbleWidth - 24,
                               ),
-                              child: SelectableText(
-                                body,
+                              child: RichMessageText(
+                                text: body,
                                 style: TextStyle(
                                   color: textColor,
                                   height: 1.34,
                                   fontSize: 14.5,
+                                ),
+                                highlightStyle: TextStyle(
+                                  color: scheme.primary,
+                                  fontWeight: FontWeight.w800,
+                                  decoration: TextDecoration.underline,
+                                  decorationColor: scheme.primary.withValues(
+                                    alpha: 0.45,
+                                  ),
+                                  fontSize: 14.5,
+                                  height: 1.34,
                                 ),
                               ),
                             ),
@@ -1423,6 +1510,111 @@ class _MessageBubbleState extends State<MessageBubble> {
       MessageDelivery.deleted => 'محذوفة',
       MessageDelivery.received => 'واردة',
     };
+  }
+}
+
+class RichMessageText extends StatefulWidget {
+  const RichMessageText({
+    super.key,
+    required this.text,
+    required this.style,
+    this.highlightStyle,
+  });
+
+  final String text;
+  final TextStyle style;
+  final TextStyle? highlightStyle;
+
+  @override
+  State<RichMessageText> createState() => _RichMessageTextState();
+}
+
+class _RichMessageTextState extends State<RichMessageText> {
+  final List<TapGestureRecognizer> _recognizers = <TapGestureRecognizer>[];
+
+  // Either a plain run of 4+ digits, or several digit groups separated by
+  // dots, commas (also the Arabic comma) or dashes — i.e. phone numbers such
+  // as `052.123.4567`. Matches with fewer than 4 total digits are skipped.
+  static final RegExp _numberPattern = RegExp(
+    r'\d+(?:[.,،\-]\d+)+|\d{4,}',
+  );
+
+  static final RegExp _separators = RegExp(r'[.,،\-]');
+
+  @override
+  void dispose() {
+    for (final recognizer in _recognizers) {
+      recognizer.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    for (final recognizer in _recognizers) {
+      recognizer.dispose();
+    }
+    _recognizers.clear();
+
+    final scheme = Theme.of(context).colorScheme;
+    final highlight =
+        widget.highlightStyle ??
+        TextStyle(
+          color: scheme.primary,
+          fontWeight: FontWeight.w800,
+          decoration: TextDecoration.underline,
+          decorationColor: scheme.primary.withValues(alpha: 0.45),
+        );
+
+    final spans = <InlineSpan>[];
+    var cursor = 0;
+    for (final match in _numberPattern.allMatches(widget.text)) {
+      if (match.start > cursor) {
+        spans.add(
+          TextSpan(text: widget.text.substring(cursor, match.start)),
+        );
+      }
+      final raw = match.group(0)!;
+      final digits = raw.replaceAll(_separators, '');
+      if (digits.length < 4) {
+        spans.add(TextSpan(text: raw));
+        cursor = match.end;
+        continue;
+      }
+      final recognizer = TapGestureRecognizer()
+        ..onTap = () => _copyNumber(digits);
+      _recognizers.add(recognizer);
+      spans.add(
+        TextSpan(
+          text: raw,
+          style: highlight,
+          recognizer: recognizer,
+        ),
+      );
+      cursor = match.end;
+    }
+    if (cursor < widget.text.length) {
+      spans.add(TextSpan(text: widget.text.substring(cursor)));
+    }
+
+    return Text.rich(TextSpan(style: widget.style, children: spans));
+  }
+
+  Future<void> _copyNumber(String digits) async {
+    await Clipboard.setData(ClipboardData(text: digits));
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text('تم نسخ الرقم: $digits'),
+          duration: const Duration(seconds: 1),
+          behavior: SnackBarBehavior.floating,
+          width: 320,
+        ),
+      );
   }
 }
 

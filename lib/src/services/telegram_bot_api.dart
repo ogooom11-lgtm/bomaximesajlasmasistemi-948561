@@ -39,6 +39,17 @@ class TelegramBotApi {
     return BotIdentity.fromJson(_asMap(data['result']) ?? {});
   }
 
+  Future<Map<String, dynamic>?> getChatMember({
+    required int chatId,
+    required int userId,
+  }) async {
+    final data = await _postJson('getChatMember', <String, Object?>{
+      'chat_id': chatId,
+      'user_id': userId,
+    });
+    return _asMap(data['result']);
+  }
+
   Future<List<Map<String, dynamic>>> getUpdates({
     required int? offset,
     int timeoutSeconds = 25,
@@ -51,6 +62,8 @@ class TelegramBotApi {
         'channel_post',
         'edited_channel_post',
         'message_reaction',
+        'my_chat_member',
+        'chat_member',
       ],
     };
     if (offset != null) {
@@ -207,10 +220,36 @@ class TelegramBotApi {
     final directory = saveToDownloads
         ? await _downloadDirectory()
         : await _cacheDirectory();
-    final filename = _safeFilename(attachment.fileName, filePath);
+    final filename = _uniqueFilename(attachment, filePath);
     final file = File('${directory.path}${Platform.pathSeparator}$filename');
     await file.writeAsBytes(response.bodyBytes, flush: true);
     return file;
+  }
+
+  /// Builds a collision-free cache filename. Telegram reports a generic name
+  /// (e.g. `sticker.webp`) for many media types, so two different stickers
+  /// would otherwise overwrite each other. A short hash of the unique id is
+  /// inserted before the extension to keep every attachment distinct.
+  String _uniqueFilename(TelegramAttachment attachment, String filePath) {
+    final base = _safeFilename(attachment.fileName, filePath);
+    final unique = attachment.uniqueId ?? attachment.fileId;
+    if (unique == null || unique.isEmpty) {
+      return base;
+    }
+    final hash = _shortHash(unique);
+    final dot = base.lastIndexOf('.');
+    if (dot < 0) {
+      return '${base}_$hash';
+    }
+    return '${base.substring(0, dot)}_$hash${base.substring(dot)}';
+  }
+
+  String _shortHash(String input) {
+    var hash = 0;
+    for (final code in input.codeUnits) {
+      hash = (hash * 31 + code) & 0x7fffffff;
+    }
+    return hash.toRadixString(36);
   }
 
   Future<Map<String, dynamic>> _postJson(

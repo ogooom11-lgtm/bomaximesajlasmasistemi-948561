@@ -137,7 +137,11 @@ class SettingsStore extends ChangeNotifier {
               )
               .whereType<Map<String, dynamic>>()
               .map(TelegramMessage.fromCacheJson)
-              .where((message) => message.id.isNotEmpty)
+              .where(
+                (message) =>
+                    message.id.isNotEmpty &&
+                    message.delivery != MessageDelivery.deleted,
+              )
               .toList(growable: true)
             ..sort((a, b) => a.date.compareTo(b.date));
     }
@@ -150,8 +154,9 @@ class SettingsStore extends ChangeNotifier {
     const maxMessagesPerChat = 500;
     final encoded = <String, dynamic>{};
     for (final entry in messagesByChat.entries) {
-      final messages = List<TelegramMessage>.from(entry.value)
-        ..sort((a, b) => a.date.compareTo(b.date));
+      final messages = List<TelegramMessage>.from(
+        entry.value.where((message) => message.delivery != MessageDelivery.deleted),
+      )..sort((a, b) => a.date.compareTo(b.date));
       final trimmed = messages.length > maxMessagesPerChat
           ? messages.sublist(messages.length - maxMessagesPerChat)
           : messages;

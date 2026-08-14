@@ -34,6 +34,10 @@ class TelegramChat {
   final String? firstName;
   final String? lastName;
 
+  bool get isGroup => type == 'group' || type == 'supergroup';
+
+  bool get isChannel => type == 'channel';
+
   String get displayTitle {
     final resolved =
         title ??

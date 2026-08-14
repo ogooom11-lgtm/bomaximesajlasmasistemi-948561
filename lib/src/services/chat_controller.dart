@@ -55,6 +55,7 @@ class ChatController extends ChangeNotifier {
   final Map<int, List<TelegramMessage>> _messagesByChat =
       <int, List<TelegramMessage>>{};
   final Map<int, int> _unreadByChat = <int, int>{};
+  final Map<int, bool> _chatSendBlocked = <int, bool>{};
 
   int? _selectedChatId;
   bool _isConnecting = false;
@@ -62,6 +63,7 @@ class ChatController extends ChangeNotifier {
   bool _isRecording = false;
   DateTime? _recordingStartedAt;
   String? _lastError;
+  Timer? _reconnectTimer;
 
   BotIdentity? get bot => _bot;
   int? get selectedChatId => _selectedChatId;
@@ -71,6 +73,13 @@ class ChatController extends ChangeNotifier {
   DateTime? get recordingStartedAt => _recordingStartedAt;
   bool get isConnected => _api != null && _bot != null && _lastError == null;
   String? get lastError => _lastError;
+
+  bool isChatSendBlocked(int chatId) => _chatSendBlocked[chatId] == true;
+
+  bool get isSelectedChatSendBlocked {
+    final id = _selectedChatId;
+    return id != null && _chatSendBlocked[id] == true;
+  }
 
   TelegramChat? get selectedChat {
     final id = _selectedChatId;
@@ -86,7 +95,9 @@ class ChatController extends ChangeNotifier {
       return const <TelegramMessage>[];
     }
     return List<TelegramMessage>.unmodifiable(
-      _messagesByChat[id] ?? const <TelegramMessage>[],
+      (_messagesByChat[id] ?? const <TelegramMessage>[])
+          .where((message) => message.delivery != MessageDelivery.deleted)
+          .toList(growable: false),
     );
   }
 
@@ -95,7 +106,9 @@ class ChatController extends ChangeNotifier {
     final includedIds = <int>{};
     for (final entry in _chats.entries) {
       includedIds.add(entry.key);
-      final messages = _messagesByChat[entry.key] ?? const <TelegramMessage>[];
+      final messages = (_messagesByChat[entry.key] ?? const <TelegramMessage>[])
+          .where((message) => message.delivery != MessageDelivery.deleted)
+          .toList(growable: false);
       summaries.add(
         ChatSummary(
           chat: entry.value,
@@ -149,6 +162,8 @@ class ChatController extends ChangeNotifier {
   @override
   void dispose() {
     _pollSession++;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
     _recorder?.dispose();
     super.dispose();
   }
@@ -177,6 +192,29 @@ class ChatController extends ChangeNotifier {
         persist: false,
       );
     }
+    _startAutoReconnect();
+  }
+
+  /// Keeps trying to sign in automatically while a token exists but the bot
+  /// is not connected yet. This covers launching the app without internet and
+  /// reconnecting as soon as the network becomes available.
+  void _startAutoReconnect() {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = Timer.periodic(const Duration(seconds: 8), (_) {
+      if (_api != null && _bot != null) {
+        return;
+      }
+      if (_isConnecting || !_settings.hasBotToken) {
+        return;
+      }
+      unawaited(
+        connect(
+          token: _settings.botToken,
+          preferredChatId: _settings.preferredChatId,
+          persist: false,
+        ),
+      );
+    });
   }
 
   Future<void> connect({
@@ -233,6 +271,10 @@ class ChatController extends ChangeNotifier {
     _chats.putIfAbsent(chatId, () => TelegramChat(id: chatId, type: 'private'));
     _unreadByChat[chatId] = 0;
     notifyListeners();
+    final chat = _chats[chatId];
+    if (chat != null && chat.isGroup) {
+      unawaited(_refreshChatPermissions(chatId));
+    }
   }
 
   void clearSelection() {
@@ -273,6 +315,50 @@ class ChatController extends ChangeNotifier {
     }
   }
 
+  /// Queries the bot's own membership in a group to detect when the group
+  /// owner has banned the bot or restricted it from sending messages.
+  Future<void> _refreshChatPermissions(int chatId) async {
+    final api = _api;
+    final bot = _bot;
+    final chat = _chats[chatId];
+    if (api == null || bot == null || chat == null) {
+      return;
+    }
+    if (!chat.isGroup) {
+      _chatSendBlocked.remove(chatId);
+      notifyListeners();
+      return;
+    }
+    try {
+      final member = await api.getChatMember(chatId: chatId, userId: bot.id);
+      _applyChatMemberStatus(chatId, member);
+    } catch (_) {
+      // Keep the previous state when the membership cannot be resolved.
+    }
+  }
+
+  void _applyChatMemberStatus(
+    int chatId,
+    Map<String, dynamic>? member,
+  ) {
+    if (member == null) {
+      return;
+    }
+    final status = member['status']?.toString();
+    final blocked = status == 'kicked' ||
+        status == 'left' ||
+        (status == 'restricted' && member['can_send_messages'] != true);
+    final changed = _chatSendBlocked[chatId] != blocked;
+    if (blocked) {
+      _chatSendBlocked[chatId] = true;
+    } else {
+      _chatSendBlocked.remove(chatId);
+    }
+    if (changed) {
+      notifyListeners();
+    }
+  }
+
   Future<void> sendText(String text, {int? replyToMessageId}) async {
     final api = _api;
     final bot = _bot;
@@ -304,6 +390,7 @@ class ChatController extends ChangeNotifier {
         pending.id,
         pending.copyWith(delivery: MessageDelivery.failed),
       );
+      _maybeBlockChatOnError(chat, error);
       _lastError = _friendlyError(error);
       notifyListeners();
     }
@@ -357,6 +444,7 @@ class ChatController extends ChangeNotifier {
           pending.id,
           pending.copyWith(delivery: MessageDelivery.failed),
         );
+        _maybeBlockChatOnError(chat, error);
         _lastError = _friendlyError(error);
         notifyListeners();
       }
@@ -640,6 +728,12 @@ class ChatController extends ChangeNotifier {
         continue;
       }
 
+      final myChatMember = _asMap(update['my_chat_member']);
+      if (myChatMember != null) {
+        _handleMyChatMemberUpdate(myChatMember);
+        continue;
+      }
+
       final edited =
           update['edited_message'] != null ||
           update['edited_channel_post'] != null;
@@ -672,6 +766,19 @@ class ChatController extends ChangeNotifier {
       }
     }
     notifyListeners();
+  }
+
+  void _handleMyChatMemberUpdate(Map<String, dynamic> myChatMember) {
+    final chat = _asMap(myChatMember['chat']);
+    final chatId = _asInt(chat?['id']);
+    if (chatId == null) {
+      return;
+    }
+    if (chat != null) {
+      _chats[chatId] = TelegramChat.fromJson(chat);
+    }
+    final newMember = _asMap(myChatMember['new_chat_member']);
+    _applyChatMemberStatus(chatId, newMember);
   }
 
   void _handleReactionUpdate(Map<String, dynamic> reaction) {
@@ -916,6 +1023,25 @@ class ChatController extends ChangeNotifier {
       return 'انتهت مهلة الاتصال بتلغرام.';
     }
     return error.toString();
+  }
+
+  void _maybeBlockChatOnError(TelegramChat chat, Object error) {
+    if (!chat.isGroup || error is! TelegramApiException) {
+      return;
+    }
+    final lower = error.message.toLowerCase();
+    final restricted = <String>[
+      'forbidden',
+      'kicked',
+      'banned',
+      'not enough rights',
+      'write_forbidden',
+      'chat_write_forbidden',
+      'have no rights',
+    ].any(lower.contains);
+    if (restricted) {
+      _chatSendBlocked[chat.id] = true;
+    }
   }
 }
 
