@@ -76,12 +76,12 @@ flutter:
   assets:
     - assets/branding/
     - assets/emoji/telegram_emoji.json
-    - assets/fonts/NotoColorEmoji-LICENSE.txt
+    - assets/fonts/Twemoji-LICENSE.md
 
   fonts:
-    - family: NotoColorEmoji
+    - family: TwemojiColor
       fonts:
-        - asset: assets/fonts/NotoColorEmoji.ttf
+        - asset: assets/fonts/TwemojiColor.ttf
 
   # To add assets to your application, add an assets section, like this:
   # assets:

@@ -1371,7 +1371,7 @@ class _TelegramStyleEmojiPickerState extends State<TelegramStyleEmojiPicker> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(color: scheme.primaryContainer, borderRadius: BorderRadius.circular(999)),
-                child: const Text('نمط تلغرام', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800)),
+                child: const Text('Twemoji ملون', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800)),
               ),
               IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close)),
             ]),
@@ -1415,7 +1415,7 @@ class _TelegramStyleEmojiPickerState extends State<TelegramStyleEmojiPicker> {
                       emoji,
                       style: const TextStyle(
                         fontSize: 27,
-                        fontFamily: 'NotoColorEmoji',
+                        fontFamily: 'TwemojiColor',
                       ),
                     ),
                   ),

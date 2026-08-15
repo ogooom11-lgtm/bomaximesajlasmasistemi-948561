@@ -43,7 +43,7 @@ class AppTheme {
       scaffoldBackgroundColor: scheme.surface,
       visualDensity: VisualDensity.standard,
       fontFamilyFallback: const [
-        'NotoColorEmoji',
+        'TwemojiColor',
         'Segoe UI',
         'Tahoma',
         'Arial',
