@@ -42,7 +42,12 @@ class AppTheme {
       colorScheme: scheme,
       scaffoldBackgroundColor: scheme.surface,
       visualDensity: VisualDensity.standard,
-      fontFamilyFallback: const ['Segoe UI', 'Tahoma', 'Arial'],
+      fontFamilyFallback: const [
+        'NotoColorEmoji',
+        'Segoe UI',
+        'Tahoma',
+        'Arial',
+      ],
       appBarTheme: AppBarTheme(
         centerTitle: false,
         elevation: 0,

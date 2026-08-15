@@ -56,6 +56,7 @@ class TelegramBotApi {
   }) async {
     final payload = <String, Object?>{
       'timeout': timeoutSeconds,
+      'limit': 100,
       'allowed_updates': const <String>[
         'message',
         'edited_message',

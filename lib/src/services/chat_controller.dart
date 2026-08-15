@@ -297,6 +297,11 @@ class ChatController extends ChangeNotifier {
           preferredChatId: preferredChatId,
         );
       }
+
+      // Telegram keeps bot updates while this device is offline. Drain all
+      // immediately available batches before starting long polling so messages
+      // sent during the outage appear as soon as the internet comes back.
+      await _receiveMissedUpdates(api, identity.id);
       _isConnecting = false;
       notifyListeners();
       final selected = selectedChat;
@@ -354,6 +359,23 @@ class ChatController extends ChangeNotifier {
   void clearError() {
     _lastError = null;
     notifyListeners();
+  }
+
+  Future<void> _receiveMissedUpdates(
+    TelegramBotApi api,
+    int botId,
+  ) async {
+    // One Bot API response contains at most 100 updates. Keep draining bounded
+    // batches to cover longer offline periods without blocking startup forever.
+    for (var batch = 0; batch < 50; batch++) {
+      final updates = await api.getUpdates(
+        offset: _updateOffset,
+        timeoutSeconds: 0,
+      );
+      if (updates.isEmpty) break;
+      _handleUpdates(updates, botId);
+      if (updates.length < 100) break;
+    }
   }
 
   Future<void> refreshNow() async {

@@ -1410,7 +1410,15 @@ class _TelegramStyleEmojiPickerState extends State<TelegramStyleEmojiPicker> {
                   onTap: () => Navigator.pop(context, emoji),
                   borderRadius: BorderRadius.circular(12),
                   hoverColor: scheme.primaryContainer,
-                  child: Center(child: Text(emoji, style: const TextStyle(fontSize: 27))),
+                  child: Center(
+                    child: Text(
+                      emoji,
+                      style: const TextStyle(
+                        fontSize: 27,
+                        fontFamily: 'NotoColorEmoji',
+                      ),
+                    ),
+                  ),
                 );
               },
             ),
