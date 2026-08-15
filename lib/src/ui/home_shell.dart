@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:math' as math;
@@ -773,7 +774,16 @@ class _ConversationPaneState extends State<ConversationPane> {
   final _scroll = ScrollController();
   TelegramMessage? _replyTo;
   int _lastMessageCount = 0;
+  int? _currentChatId;
   bool _showStickerPanel = false;
+  bool _showJumpToBottom = false;
+  final GlobalKey _unreadMarkerKey = GlobalKey();
+
+  @override
+  void initState() {
+    super.initState();
+    _scroll.addListener(_onScroll);
+  }
 
   @override
   void dispose() {
@@ -785,14 +795,44 @@ class _ConversationPaneState extends State<ConversationPane> {
   @override
   void didUpdateWidget(covariant ConversationPane oldWidget) {
     super.didUpdateWidget(oldWidget);
-    _scheduleScroll();
+    if (oldWidget.controller.selectedChatId != widget.controller.selectedChatId) {
+      _currentChatId = null;
+    }
+  }
+
+  void _onScroll() {
+    if (!_scroll.hasClients) return;
+    final shouldShow =
+        _scroll.position.maxScrollExtent - _scroll.position.pixels > 180;
+    if (shouldShow != _showJumpToBottom && mounted) {
+      setState(() => _showJumpToBottom = shouldShow);
+    }
   }
 
   void _scheduleScroll() {
+    WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToBottom());
+  }
+
+  void _jumpToBottom() {
+    if (!_scroll.hasClients) return;
+    final max = _scroll.position.maxScrollExtent;
+    _scroll.animateTo(
+      max,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  void _scrollToUnreadStart() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_scroll.hasClients) return;
-      final max = _scroll.position.maxScrollExtent;
-      _scroll.animateTo(max, duration: const Duration(milliseconds: 260), curve: Curves.easeOutCubic);
+      final markerContext = _unreadMarkerKey.currentContext;
+      if (markerContext == null) return;
+      Scrollable.ensureVisible(
+        markerContext,
+        alignment: 0.08,
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeOutCubic,
+      );
     });
   }
 
@@ -838,9 +878,20 @@ class _ConversationPaneState extends State<ConversationPane> {
   Widget build(BuildContext context) {
     final chat = widget.controller.selectedChat;
     final messages = widget.controller.selectedMessages;
-    if (messages.length != _lastMessageCount) {
+    final unreadStartId = widget.controller.selectedUnreadStartMessageId;
+    if (chat?.id != _currentChatId) {
+      _currentChatId = chat?.id;
       _lastMessageCount = messages.length;
-      _scheduleScroll();
+      if (unreadStartId != null) {
+        _scrollToUnreadStart();
+      } else {
+        _scheduleScroll();
+      }
+    } else if (messages.length != _lastMessageCount) {
+      final wasNearBottom = !_scroll.hasClients ||
+          _scroll.position.maxScrollExtent - _scroll.position.pixels < 120;
+      _lastMessageCount = messages.length;
+      if (wasNearBottom) _scheduleScroll();
     }
 
     if (chat == null) {
@@ -852,21 +903,46 @@ class _ConversationPaneState extends State<ConversationPane> {
         ConversationHeader(chat: chat, settings: widget.settings, compact: widget.compact, onBack: widget.onBack, onRefresh: widget.controller.refreshNow, onSettings: widget.onSettings),
         const Divider(height: 1),
         Expanded(
-          child: ChatCanvas(
-            child: messages.isEmpty
-                ? EmptyPanel(icon: Icons.chat_bubble_outline, title: 'لا توجد رسائل بعد', subtitle: 'اكتب رسالة أو أرسل ملفاً لبدء المحادثة.')
-                : Scrollbar(
-                    controller: _scroll,
-                    child: ListView.builder(
-                      controller: _scroll,
-                      padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
-                      itemCount: messages.length,
-                      itemBuilder: (context, index) {
-                        final message = messages[index];
-                        return MessageBubble(key: ValueKey(message.id), message: message, controller: widget.controller, stickerStore: widget.stickerStore, onReply: () => setState(() => _replyTo = message), onEdit: () => showEditDialog(context, widget.controller, message));
-                      },
-                    ),
+          child: Stack(
+            children: <Widget>[
+              Positioned.fill(
+                child: ChatCanvas(
+                  child: messages.isEmpty
+                      ? EmptyPanel(icon: Icons.chat_bubble_outline, title: 'لا توجد رسائل بعد', subtitle: 'اكتب رسالة أو أرسل ملفاً لبدء المحادثة.')
+                      : Scrollbar(
+                          controller: _scroll,
+                          child: ListView.builder(
+                            controller: _scroll,
+                            padding: const EdgeInsets.fromLTRB(18, 18, 18, 80),
+                            itemCount: messages.length,
+                            itemBuilder: (context, index) {
+                              final message = messages[index];
+                              final startsUnread = message.id == unreadStartId;
+                              return Column(
+                                key: startsUnread ? _unreadMarkerKey : ValueKey(message.id),
+                                mainAxisSize: MainAxisSize.min,
+                                children: <Widget>[
+                                  if (startsUnread) const UnreadMessagesDivider(),
+                                  MessageBubble(key: ValueKey('bubble:${message.id}'), message: message, controller: widget.controller, stickerStore: widget.stickerStore, onReply: () => setState(() => _replyTo = message), onEdit: () => showEditDialog(context, widget.controller, message)),
+                                ],
+                              );
+                            },
+                          ),
+                        ),
+                ),
+              ),
+              if (_showJumpToBottom)
+                Positioned(
+                  left: 20,
+                  bottom: 18,
+                  child: FloatingActionButton.small(
+                    heroTag: 'jump-to-bottom-${chat.id}',
+                    tooltip: 'الانتقال إلى آخر المحادثة',
+                    onPressed: _jumpToBottom,
+                    child: const Icon(Icons.keyboard_arrow_down_rounded),
                   ),
+                ),
+            ],
           ),
         ),
         if (_showStickerPanel) StickerPickerPanel(stickerStore: widget.stickerStore, onStickerSelected: (sticker) async {
@@ -901,6 +977,39 @@ class _ConversationPaneState extends State<ConversationPane> {
           stickerStore: widget.stickerStore,
         ),
       ],
+    );
+  }
+}
+
+class UnreadMessagesDivider extends StatelessWidget {
+  const UnreadMessagesDivider({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Row(children: <Widget>[
+        Expanded(child: Divider(color: scheme.primary.withValues(alpha: 0.55))),
+        Container(
+          margin: const EdgeInsets.symmetric(horizontal: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 6),
+          decoration: BoxDecoration(
+            color: scheme.primaryContainer,
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: scheme.primary.withValues(alpha: 0.32)),
+          ),
+          child: Text(
+            'رسائل غير مقروءة',
+            style: TextStyle(
+              color: scheme.onPrimaryContainer,
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ),
+        Expanded(child: Divider(color: scheme.primary.withValues(alpha: 0.55))),
+      ]),
     );
   }
 }
@@ -1189,15 +1298,125 @@ class EmojiButton extends StatelessWidget {
   final bool enabled;
   final ValueChanged<String> onEmoji;
 
+  Future<void> _openPicker(BuildContext context) async {
+    final raw = await rootBundle.loadString(
+      'assets/emoji/telegram_emoji.json',
+    );
+    final decoded = jsonDecode(raw) as Map<String, dynamic>;
+    final categories = decoded.map(
+      (name, items) => MapEntry(
+        name,
+        (items as List<dynamic>).map((item) => item.toString()).toList(),
+      ),
+    );
+    if (!context.mounted) return;
+    final selected = await showDialog<String>(
+      context: context,
+      builder: (context) => TelegramStyleEmojiPicker(categories: categories),
+    );
+    if (selected != null) onEmoji(selected);
+  }
+
   @override
   Widget build(BuildContext context) {
-    const emojis = <String>['👍', '❤️', '😂', '🔥', '👏', '🙏', '😍', '✅'];
-    return PopupMenuButton<String>(
-      tooltip: 'إيموجي',
-      enabled: enabled,
-      icon: const Icon(Icons.mood),
-      onSelected: onEmoji,
-      itemBuilder: (context) => emojis.map((emoji) => PopupMenuItem<String>(value: emoji, child: Text(emoji, style: const TextStyle(fontSize: 22)))).toList(),
+    return Tooltip(
+      message: 'مكتبة الإيموجي',
+      child: IconButton(
+        onPressed: enabled ? () => _openPicker(context) : null,
+        icon: const Icon(Icons.sentiment_satisfied_alt_rounded),
+      ),
+    );
+  }
+}
+
+class TelegramStyleEmojiPicker extends StatefulWidget {
+  const TelegramStyleEmojiPicker({super.key, required this.categories});
+
+  final Map<String, List<String>> categories;
+
+  @override
+  State<TelegramStyleEmojiPicker> createState() =>
+      _TelegramStyleEmojiPickerState();
+}
+
+class _TelegramStyleEmojiPickerState extends State<TelegramStyleEmojiPicker> {
+  late String _category;
+
+  @override
+  void initState() {
+    super.initState();
+    _category = widget.categories.keys.first;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final emojis = widget.categories[_category] ?? const <String>[];
+    return Dialog(
+      clipBehavior: Clip.antiAlias,
+      child: SizedBox(
+        width: 520,
+        height: 560,
+        child: Column(children: <Widget>[
+          Container(
+            padding: const EdgeInsets.fromLTRB(16, 14, 12, 10),
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerHighest.withValues(alpha: 0.55),
+              border: Border(bottom: BorderSide(color: scheme.outlineVariant)),
+            ),
+            child: Row(children: <Widget>[
+              Icon(Icons.sentiment_satisfied_alt_rounded, color: scheme.primary),
+              const SizedBox(width: 10),
+              const Expanded(child: Text('إيموجي', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900))),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(color: scheme.primaryContainer, borderRadius: BorderRadius.circular(999)),
+                child: const Text('نمط تلغرام', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800)),
+              ),
+              IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close)),
+            ]),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            height: 44,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              itemCount: widget.categories.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 6),
+              itemBuilder: (context, index) {
+                final name = widget.categories.keys.elementAt(index);
+                return ChoiceChip(
+                  label: Text(name),
+                  selected: name == _category,
+                  onSelected: (_) => setState(() => _category = name),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 8),
+          Expanded(
+            child: GridView.builder(
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 8,
+                mainAxisSpacing: 5,
+                crossAxisSpacing: 5,
+              ),
+              itemCount: emojis.length,
+              itemBuilder: (context, index) {
+                final emoji = emojis[index];
+                return InkWell(
+                  onTap: () => Navigator.pop(context, emoji),
+                  borderRadius: BorderRadius.circular(12),
+                  hoverColor: scheme.primaryContainer,
+                  child: Center(child: Text(emoji, style: const TextStyle(fontSize: 27))),
+                );
+              },
+            ),
+          ),
+        ]),
+      ),
     );
   }
 }
@@ -1285,7 +1504,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                             child: Row(mainAxisSize: MainAxisSize.min, children: <Widget>[
                               Icon(_statusIcon(message.delivery), size: 13, color: textColor.withValues(alpha: 0.56)),
                               const SizedBox(width: 4),
-                              Text(_statusLabel(message.delivery), style: TextStyle(color: textColor.withValues(alpha: 0.56), fontSize: 10.5)),
+                              Text(_statusLabel(message.delivery, widget.controller.isConnected), style: TextStyle(color: textColor.withValues(alpha: 0.56), fontSize: 10.5)),
                               const SizedBox(width: 7),
                               Text(intl.DateFormat('HH:mm').format(message.date), style: TextStyle(color: textColor.withValues(alpha: 0.56), fontSize: 10.5)),
                             ]),
@@ -1315,8 +1534,8 @@ class _MessageBubbleState extends State<MessageBubble> {
         MessageDelivery.received => Icons.done,
       };
 
-  String _statusLabel(MessageDelivery delivery) => switch (delivery) {
-        MessageDelivery.sending => 'جار الإرسال',
+  String _statusLabel(MessageDelivery delivery, bool connected) => switch (delivery) {
+        MessageDelivery.sending => connected ? 'جار الإرسال' : 'بانتظار الإنترنت',
         MessageDelivery.failed => 'فشل',
         MessageDelivery.sent => 'مرسلة',
         MessageDelivery.edited => 'معدلة',

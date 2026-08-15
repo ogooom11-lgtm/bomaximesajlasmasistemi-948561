@@ -55,14 +55,19 @@ class ChatController extends ChangeNotifier {
   int _pollSession = 0;
   int _temporaryMessageId = -1;
   Timer? _reconnectTimer;
+  Timer? _outboxRetryTimer;
+  bool _isFlushingOutbox = false;
+  final List<_QueuedTextMessage> _textOutbox = <_QueuedTextMessage>[];
 
   final Map<int, TelegramChat> _chats = <int, TelegramChat>{};
   final Map<int, bool> _canSendByChat = <int, bool>{};
   final Map<int, List<TelegramMessage>> _messagesByChat =
       <int, List<TelegramMessage>>{};
   final Map<int, int> _unreadByChat = <int, int>{};
+  final Map<int, String> _firstUnreadByChat = <int, String>{};
 
   int? _selectedChatId;
+  String? _selectedUnreadStartMessageId;
   bool _isConnecting = false;
   bool _isPolling = false;
   bool _isRecording = false;
@@ -77,6 +82,8 @@ class ChatController extends ChangeNotifier {
   DateTime? get recordingStartedAt => _recordingStartedAt;
   bool get isConnected => _api != null && _bot != null && _lastError == null;
   String? get lastError => _lastError;
+  String? get selectedUnreadStartMessageId => _selectedUnreadStartMessageId;
+  int get queuedMessageCount => _textOutbox.length;
   bool get canSendToSelectedChat {
     final chat = selectedChat;
     if (chat == null) return false;
@@ -175,6 +182,7 @@ class ChatController extends ChangeNotifier {
   void dispose() {
     _pollSession++;
     _reconnectTimer?.cancel();
+    _outboxRetryTimer?.cancel();
     _recorder?.dispose();
     super.dispose();
   }
@@ -196,6 +204,7 @@ class ChatController extends ChangeNotifier {
     if (_selectedChatId == null && _chats.isNotEmpty) {
       _selectedChatId = _chats.keys.first;
     }
+    _restorePendingOutbox();
     notifyListeners();
     if (_settings.hasBotToken) {
       await connect(
@@ -216,7 +225,11 @@ class ChatController extends ChangeNotifier {
     _chats.clear();
     _messagesByChat.clear();
     _unreadByChat.clear();
+    _firstUnreadByChat.clear();
+    _selectedUnreadStartMessageId = null;
     _canSendByChat.clear();
+    _textOutbox.clear();
+    _outboxRetryTimer?.cancel();
     _selectedChatId = account.preferredChatId;
     _lastError = null;
     notifyListeners();
@@ -231,6 +244,7 @@ class ChatController extends ChangeNotifier {
     if (_selectedChatId == null && _chats.isNotEmpty) {
       _selectedChatId = _chats.keys.first;
     }
+    _restorePendingOutbox();
     notifyListeners();
 
     if (account.botToken.trim().isNotEmpty) {
@@ -290,6 +304,7 @@ class ChatController extends ChangeNotifier {
         unawaited(_refreshSendPermission(selected!.id));
       }
       _startPolling();
+      unawaited(_flushTextOutbox());
     } catch (error) {
       _api = null;
       _bot = null;
@@ -309,6 +324,7 @@ class ChatController extends ChangeNotifier {
 
   void selectChat(int chatId) {
     _selectedChatId = chatId;
+    _selectedUnreadStartMessageId = _firstUnreadByChat.remove(chatId);
     _chats.putIfAbsent(chatId, () => TelegramChat(id: chatId, type: 'private'));
     _unreadByChat[chatId] = 0;
     unawaited(_notifications.onChatOpened(chatId));
@@ -321,6 +337,7 @@ class ChatController extends ChangeNotifier {
 
   void clearSelection() {
     _selectedChatId = null;
+    _selectedUnreadStartMessageId = null;
     notifyListeners();
   }
 
@@ -358,13 +375,9 @@ class ChatController extends ChangeNotifier {
   }
 
   Future<void> sendText(String text, {int? replyToMessageId}) async {
-    final api = _api;
-    final bot = _bot;
     final chat = selectedChat;
     final trimmed = text.trimRight();
-    if (api == null || bot == null || chat == null || trimmed.trim().isEmpty) {
-      return;
-    }
+    if (chat == null || trimmed.trim().isEmpty) return;
     if (!_ensureCanSend(chat)) return;
 
     final pending = TelegramMessage.localPending(
@@ -373,26 +386,102 @@ class ChatController extends ChangeNotifier {
       text: trimmed,
       replyToMessageId: replyToMessageId,
     );
+    _textOutbox.add(_QueuedTextMessage(pending));
     _addOrReplaceMessage(pending);
+    notifyListeners();
 
+    // The message stays in the outbox while offline. It is retried automatically
+    // after polling or login succeeds, so closing the composer never loses it.
+    await _flushTextOutbox();
+  }
+
+  Future<void> _flushTextOutbox() async {
+    if (_isFlushingOutbox || _textOutbox.isEmpty) return;
+    final api = _api;
+    final bot = _bot;
+    if (api == null || bot == null) {
+      _scheduleOutboxRetry();
+      if (_settings.hasBotToken && !_isConnecting) {
+        _scheduleReconnect(
+          token: _settings.botToken,
+          apiBaseUrl: _settings.apiBaseUrl,
+          preferredChatId: _settings.preferredChatId,
+        );
+      }
+      return;
+    }
+
+    _isFlushingOutbox = true;
     try {
-      final sent = await api.sendText(
-        chatId: chat.id,
-        text: trimmed,
-        botId: bot.id,
-        replyToMessageId: replyToMessageId,
-      );
-      _replaceMessage(pending.id, sent);
-      await _notifications.playSendSound();
-    } catch (error) {
-      _handlePossibleWriteRestriction(error, chat.id);
-      _replaceMessage(
-        pending.id,
-        pending.copyWith(delivery: MessageDelivery.failed),
-      );
-      _lastError = _friendlyError(error);
+      while (_textOutbox.isNotEmpty) {
+        final queued = _textOutbox.first;
+        final pending = queued.message;
+        if (!(_canSendByChat[pending.chat.id] ?? true)) {
+          _replaceMessage(
+            pending.id,
+            pending.copyWith(delivery: MessageDelivery.failed),
+          );
+          _textOutbox.removeAt(0);
+          continue;
+        }
+        try {
+          final sent = await api.sendText(
+            chatId: pending.chat.id,
+            text: pending.text ?? '',
+            botId: bot.id,
+            replyToMessageId: pending.replyToMessageId,
+          );
+          _textOutbox.removeAt(0);
+          _replaceMessage(pending.id, sent);
+          await _notifications.playSendSound();
+          _lastError = null;
+        } catch (error) {
+          _handlePossibleWriteRestriction(error, pending.chat.id);
+          _lastError = _friendlyError(error);
+          if (_isTransientConnectionError(error)) {
+            _scheduleOutboxRetry();
+            notifyListeners();
+            return;
+          }
+          _textOutbox.removeAt(0);
+          _replaceMessage(
+            pending.id,
+            pending.copyWith(delivery: MessageDelivery.failed),
+          );
+          notifyListeners();
+        }
+      }
+    } finally {
+      _isFlushingOutbox = false;
       notifyListeners();
     }
+  }
+
+  void _scheduleOutboxRetry() {
+    if (_outboxRetryTimer?.isActive == true || _textOutbox.isEmpty) return;
+    _outboxRetryTimer = Timer(const Duration(seconds: 4), () {
+      _outboxRetryTimer = null;
+      unawaited(_flushTextOutbox());
+    });
+  }
+
+  void _restorePendingOutbox() {
+    _textOutbox.clear();
+    var lowestTemporaryId = -1;
+    for (final messages in _messagesByChat.values) {
+      for (final message in messages) {
+        if (message.messageId < lowestTemporaryId) {
+          lowestTemporaryId = message.messageId;
+        }
+        if (message.delivery == MessageDelivery.sending &&
+            message.isOutgoing &&
+            message.text?.trim().isNotEmpty == true) {
+          _textOutbox.add(_QueuedTextMessage(message));
+        }
+      }
+    }
+    _textOutbox.sort((a, b) => a.message.date.compareTo(b.message.date));
+    _temporaryMessageId = lowestTemporaryId - 1;
   }
 
   Future<void> sendFiles(
@@ -802,6 +891,7 @@ class ChatController extends ChangeNotifier {
         }
         _handleUpdates(updates, botId);
         _lastError = null;
+        if (_textOutbox.isNotEmpty) unawaited(_flushTextOutbox());
       } catch (error) {
         if (session != _pollSession) {
           return;
@@ -871,6 +961,10 @@ class ChatController extends ChangeNotifier {
 
       if (!normalized.isOutgoing && !edited && !existed) {
         if (normalized.chat.id != _selectedChatId) {
+          _firstUnreadByChat.putIfAbsent(
+            normalized.chat.id,
+            () => normalized.id,
+          );
           _unreadByChat[normalized.chat.id] =
               (_unreadByChat[normalized.chat.id] ?? 0) + 1;
         }
@@ -1262,6 +1356,12 @@ class ChatController extends ChangeNotifier {
     }
     return error.toString();
   }
+}
+
+class _QueuedTextMessage {
+  const _QueuedTextMessage(this.message);
+
+  final TelegramMessage message;
 }
 
 class _FileRoute {
